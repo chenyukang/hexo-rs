@@ -1,113 +1,117 @@
 # hexo-rs
 
-一个用 Rust 编写的静态站点生成器，目标是兼容 Hexo 主题（EJS 模板）。
+A static site generator written in Rust, designed to be compatible with Hexo themes (EJS templates).
 
-## 特性
+My blog is using Hexo, bug I don't want to install Node.js and all the dependencies just to generate static files. So I wrote this project to generate Hexo sites using Rust.
 
-- 快速：使用 Rust 编写，生成速度比 Node.js 版本的 Hexo 快数倍
-- 兼容：支持大部分 Hexo EJS 主题
-- 简单：命令行接口与 Hexo 基本一致
+Note: hexo-rs don't support all Hexo features, please read the "Limitations" section below.
 
-## 安装
+## Features
+
+- Fast: generates sites faster than the Node.js version of Hexo
+- Compatible: Supports most Hexo EJS themes
+- Simple: Command-line interface is basically consistent with Hexo
+
+## Installation
 
 ```bash
 cargo install --path .
 ```
 
-## 使用
+## Usage
 
 ```bash
-# 生成静态文件
+# Generate static files
 hexo-rs generate
 
-# 启动本地服务器
+# Start local server
 hexo-rs server
 
-# 清理生成的文件
+# Clean generated files
 hexo-rs clean
 
-# 创建新文章
-hexo-rs new "文章标题"
+# Create new post
+hexo-rs new "Post Title"
 
-# 列出文章
+# List posts
 hexo-rs list
 ```
 
-## 局限性
+## Limitations
 
-### 1. Stylus CSS 预处理器
+### 1. Stylus CSS Preprocessor
 
-hexo-rs 不内置 Stylus 编译器。如果主题使用 `.styl` 文件，需要：
+hexo-rs does not include a built-in Stylus compiler. If the theme uses `.styl` files, you need to:
 
-**方案一：安装 stylus**
+**Option 1: Install stylus**
 
 ```bash
 npm install -g stylus
 ```
 
-hexo-rs 会尝试调用 `npx stylus` 来编译，但这需要 Node.js 环境。
+hexo-rs will try to call `npx stylus` to compile, but this requires a Node.js environment.
 
-**方案二：预编译 CSS（推荐）**
+**Option 2: Pre-compile CSS (Recommended)**
 
 ```bash
-# 使用 Node.js 版 Hexo 生成一次
+# Generate once using Node.js version of Hexo
 npx hexo generate
 
-# 将编译好的 CSS 复制到主题目录
+# Copy the compiled CSS to the theme directory
 cp public/css/style.css themes/your-theme/source/css/style.css
 ```
 
-### 2. EJS 模板支持
+### 2. EJS Template Support
 
-支持大部分 EJS 语法，但以下特性可能不完全兼容：
+Most EJS syntax is supported, but the following features may not be fully compatible:
 
-- 复杂的 JavaScript 表达式（使用 QuickJS 引擎执行）
-- 某些 Hexo 插件提供的 helper 函数
-- `<%- partial(...) %>` 中的复杂参数传递
+- Complex JavaScript expressions (executed using QuickJS engine)
+- Some helper functions provided by Hexo plugins
+- Complex parameter passing in `<%- partial(...) %>`
 
-### 3. 不支持的 Hexo 功能
+### 3. Unsupported Hexo Features
 
-- Hexo 插件系统
-- 自定义 Generator
-- 自定义 Helper（仅支持内置 helper）
-- 部署功能（`hexo deploy`）
-- 草稿功能有限支持
+- Hexo plugin system
+- Custom Generators
+- Custom Helpers (only built-in helpers are supported)
+- Deploy functionality (`hexo deploy`)
+- Limited draft support
 
-### 4. Markdown 渲染
+### 4. Markdown Rendering
 
-使用 `pulldown-cmark` 渲染 Markdown，与 Hexo 默认的 `marked` 或 `markdown-it` 可能有细微差异：
+Uses `pulldown-cmark` to render Markdown, which may have subtle differences from Hexo's default `marked` or `markdown-it`:
 
-- 代码高亮使用 `syntect`
-- 某些 Hexo 标签插件语法不支持
+- Code highlighting uses `syntect`
+- Some Hexo tag plugin syntax is not supported
 
-### 5. 主题配置
+### 5. Theme Configuration
 
-主题配置文件（`_config.yml`）中的配置项顺序会被保留，但某些复杂的 YAML 结构可能解析不同。
+The order of configuration items in theme configuration files (`_config.yml`) is preserved, but some complex YAML structures may be parsed differently.
 
-## 已测试的主题
+## Tested Themes
 
 - vexo
 
-## 注意事项
+## Notes
 
-1. **首次使用前**：建议先用 Node.js 版 Hexo 生成一次，确保主题的 CSS 已编译
-2. **文章 Front Matter**：确保格式正确，日期格式推荐使用 `YYYY-MM-DD HH:mm:ss`
-3. **文件监听**：`hexo-rs server` 会自动监听文件变化并重新生成
-4. **调试模式**：使用 `hexo-rs -d generate` 查看详细日志
+1. **Before first use**: It's recommended to generate once with the Node.js version of Hexo to ensure the theme's CSS is compiled
+2. **Post Front Matter**: Ensure the format is correct, recommended date format is `YYYY-MM-DD HH:mm:ss`
+3. **File watching**: `hexo-rs server` will automatically watch for file changes and regenerate
+4. **Debug mode**: Use `hexo-rs -d generate` to view detailed logs
 
-## 开发
+## Development
 
 ```bash
-# 开发构建
+# Development build
 cargo build
 
-# 发布构建
+# Release build
 cargo build --release
 
-# 运行测试
+# Run tests
 cargo test
 
-# 代码检查
+# Code linting
 cargo clippy
 ```
 
