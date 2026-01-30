@@ -2,7 +2,7 @@
 
 A static site generator written in Rust, designed to be compatible with Hexo themes (EJS templates).
 
-My blog is using Hexo, bug I don't want to install Node.js and all the dependencies just to generate static files. So I wrote this project to generate Hexo sites using Rust.
+My blog is using Hexo, but I don't want to install Node.js and all the dependencies just to generate static files. So I wrote this project to generate Hexo sites using Rust.
 
 Note: hexo-rs don't support all Hexo features, please read the "Limitations" section below.
 
