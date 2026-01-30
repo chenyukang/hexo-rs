@@ -1,7 +1,7 @@
 //! Generator module - generates static HTML files
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use walkdir::WalkDir;
 
@@ -409,7 +409,8 @@ impl<'a> Generator<'a> {
 
     /// Generate category pages
     fn generate_categories(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        let mut categories: HashMap<String, Vec<&Post>> = HashMap::new();
+        // Use BTreeMap for deterministic iteration order (alphabetically sorted by category name)
+        let mut categories: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
 
         for post in posts {
             for cat in &post.categories {
@@ -463,7 +464,8 @@ impl<'a> Generator<'a> {
 
     /// Generate tag pages
     fn generate_tags(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        let mut tags: HashMap<String, Vec<&Post>> = HashMap::new();
+        // Use BTreeMap for deterministic iteration order (alphabetically sorted by tag name)
+        let mut tags: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
 
         for post in posts {
             for tag in &post.tags {
