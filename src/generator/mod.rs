@@ -81,6 +81,16 @@ impl<'a> Generator<'a> {
         }
         tracing::debug!("theme.copy_source took {:?}", start.elapsed());
 
+        // Generate Atom feed
+        let start = std::time::Instant::now();
+        self.generate_atom_feed(posts)?;
+        tracing::debug!("generate_atom_feed took {:?}", start.elapsed());
+
+        // Generate sitemap
+        let start = std::time::Instant::now();
+        self.generate_sitemap(posts, pages)?;
+        tracing::debug!("generate_sitemap took {:?}", start.elapsed());
+
         Ok(())
     }
 
@@ -146,15 +156,16 @@ impl<'a> Generator<'a> {
             ctx.set_object("config", &self.hexo.config);
             ctx.set_object("site", site_data);
             ctx.set_object("page", post);
+            ctx.set_object("theme", theme.config());
             ctx.set_string("path", &post.path);
             ctx.set_string("url", &post.permalink);
 
             // Set prev/next posts
             if let Some(prev) = post.prev(all_posts) {
-                ctx.set_object("page.prev", prev);
+                ctx.set_nested_object("page.prev", prev);
             }
             if let Some(next) = post.next(all_posts) {
-                ctx.set_object("page.next", next);
+                ctx.set_nested_object("page.next", next);
             }
 
             // Find template
@@ -186,6 +197,7 @@ impl<'a> Generator<'a> {
             ctx.set_object("config", &self.hexo.config);
             ctx.set_object("site", site_data);
             ctx.set_object("page", page);
+            ctx.set_object("theme", theme.config());
             ctx.set_string("path", &page.path);
             ctx.set_string("url", &page.permalink);
 
@@ -279,6 +291,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("config", &self.hexo.config);
                 ctx.set_object("site", site_data);
                 ctx.set_object("page", &page_info);
+                ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &current_url);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 // Pre-set wordCount for templates that use complex JS expressions
@@ -356,6 +369,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("config", &self.hexo.config);
                 ctx.set_object("site", &filtered_site);
                 ctx.set_object("page", &page_info);
+                ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &current_url);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
@@ -380,6 +394,7 @@ impl<'a> Generator<'a> {
             ctx.set_object("config", &self.hexo.config);
             ctx.set_object("site", site_data);
             ctx.set_object("page", &page_info);
+            ctx.set_object("theme", theme.config());
             ctx.set_string("path", &current_url);
             ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
             theme.render_with_layout("archive", &ctx)?
@@ -426,6 +441,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("site", site_data);
                 ctx.set_object("page", &page_info);
                 ctx.set_object("page.posts", cat_posts);
+                ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &current_url);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
 
@@ -506,6 +522,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("config", &self.hexo.config);
                 ctx.set_object("site", &filtered_site);
                 ctx.set_object("page", &page_info);
+                ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &current_url);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
@@ -560,6 +577,344 @@ impl<'a> Generator<'a> {
 
         Ok(())
     }
+
+    /// Generate Atom feed (atom.xml)
+    fn generate_atom_feed(&self, posts: &[Post]) -> Result<()> {
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+"#,
+        );
+
+        // Site info
+        xml.push_str(&format!(
+            "  <title>{}</title>\n",
+            escape_xml(&self.hexo.config.title)
+        ));
+
+        if !self.hexo.config.subtitle.is_empty() {
+            xml.push_str(&format!(
+                "  <subtitle>{}</subtitle>\n",
+                escape_xml(&self.hexo.config.subtitle)
+            ));
+        }
+
+        xml.push_str(&format!(
+            "  <link href=\"{}atom.xml\" rel=\"self\"/>\n",
+            self.hexo.config.root
+        ));
+        xml.push_str(&format!("  <link href=\"{}\"/>\n", self.hexo.config.url));
+
+        // Updated time (use most recent post date or current time)
+        let updated = posts
+            .first()
+            .map(|p| p.updated.unwrap_or(p.date))
+            .unwrap_or_else(chrono::Local::now);
+        xml.push_str(&format!("  <updated>{}</updated>\n", updated.to_rfc3339()));
+
+        xml.push_str(&format!("  <id>{}/</id>\n", self.hexo.config.url));
+
+        // Author
+        xml.push_str("  <author>\n");
+        xml.push_str(&format!(
+            "    <name>{}</name>\n",
+            escape_xml(&self.hexo.config.author)
+        ));
+        xml.push_str("  </author>\n");
+
+        // Generator
+        xml.push_str(
+            "  <generator uri=\"https://github.com/ponyma/hexo-rs\">hexo-rs</generator>\n",
+        );
+
+        // Entries (limit to most recent 20 posts for feed size)
+        let feed_limit = 20;
+        for post in posts.iter().take(feed_limit) {
+            xml.push_str("  <entry>\n");
+            xml.push_str(&format!("    <title>{}</title>\n", escape_xml(&post.title)));
+            xml.push_str(&format!(
+                "    <link href=\"{}\"/>\n",
+                escape_xml(&post.permalink)
+            ));
+            xml.push_str(&format!("    <id>{}</id>\n", escape_xml(&post.permalink)));
+            xml.push_str(&format!(
+                "    <published>{}</published>\n",
+                post.date.to_rfc3339()
+            ));
+
+            let updated = post.updated.unwrap_or(post.date);
+            xml.push_str(&format!(
+                "    <updated>{}</updated>\n",
+                updated.to_rfc3339()
+            ));
+
+            // Content (full HTML in CDATA)
+            // Convert relative URLs to absolute and escape for CDATA
+            let content_with_absolute_urls =
+                make_urls_absolute(&post.content, &self.hexo.config.url);
+            xml.push_str(&format!(
+                "    <content type=\"html\"><![CDATA[{}]]></content>\n",
+                escape_cdata(&content_with_absolute_urls)
+            ));
+
+            // Summary (excerpt or first 200 chars)
+            if let Some(excerpt) = &post.excerpt {
+                xml.push_str(&format!(
+                    "    <summary type=\"html\">{}</summary>\n",
+                    escape_xml(&sanitize_xml_chars(excerpt))
+                ));
+            }
+
+            // Tags as categories
+            for tag in &post.tags {
+                let tag_slug = slug::slugify(tag);
+                xml.push_str(&format!(
+                    "    <category term=\"{}\" scheme=\"{}{}/{}/\"/>\n",
+                    escape_xml(tag),
+                    self.hexo.config.url,
+                    self.hexo.config.tag_dir,
+                    tag_slug
+                ));
+            }
+
+            xml.push_str("  </entry>\n");
+        }
+
+        xml.push_str("</feed>\n");
+
+        fs::write(self.hexo.public_dir.join("atom.xml"), xml)?;
+        tracing::info!(
+            "Generated atom.xml with {} entries",
+            posts.len().min(feed_limit)
+        );
+
+        Ok(())
+    }
+
+    /// Generate sitemap.xml and post-sitemap.xml
+    fn generate_sitemap(&self, posts: &[Post], pages: &[Page]) -> Result<()> {
+        // Generate main sitemap.xml (simple version)
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+"#,
+        );
+
+        // Add homepage
+        xml.push_str("  <url>\n");
+        xml.push_str(&format!("    <loc>{}</loc>\n", self.hexo.config.url));
+        if let Some(post) = posts.first() {
+            xml.push_str(&format!(
+                "    <lastmod>{}</lastmod>\n",
+                post.date.format("%Y-%m-%d")
+            ));
+        }
+        xml.push_str("    <changefreq>daily</changefreq>\n");
+        xml.push_str("    <priority>1.0</priority>\n");
+        xml.push_str("  </url>\n");
+
+        // Add all posts
+        for post in posts {
+            xml.push_str("  <url>\n");
+            xml.push_str(&format!("    <loc>{}</loc>\n", escape_xml(&post.permalink)));
+            let lastmod = post.updated.unwrap_or(post.date);
+            xml.push_str(&format!(
+                "    <lastmod>{}</lastmod>\n",
+                lastmod.format("%Y-%m-%d")
+            ));
+            xml.push_str("    <changefreq>monthly</changefreq>\n");
+            xml.push_str("    <priority>0.8</priority>\n");
+            xml.push_str("  </url>\n");
+        }
+
+        // Add all pages
+        for page in pages {
+            xml.push_str("  <url>\n");
+            xml.push_str(&format!("    <loc>{}</loc>\n", escape_xml(&page.permalink)));
+            let lastmod = page.updated.unwrap_or(page.date);
+            xml.push_str(&format!(
+                "    <lastmod>{}</lastmod>\n",
+                lastmod.format("%Y-%m-%d")
+            ));
+            xml.push_str("    <changefreq>monthly</changefreq>\n");
+            xml.push_str("    <priority>0.6</priority>\n");
+            xml.push_str("  </url>\n");
+        }
+
+        // Add archive page
+        xml.push_str("  <url>\n");
+        xml.push_str(&format!(
+            "    <loc>{}{}/</loc>\n",
+            self.hexo.config.url, self.hexo.config.archive_dir
+        ));
+        xml.push_str("    <changefreq>weekly</changefreq>\n");
+        xml.push_str("    <priority>0.5</priority>\n");
+        xml.push_str("  </url>\n");
+
+        xml.push_str("</urlset>\n");
+
+        fs::write(self.hexo.public_dir.join("sitemap.xml"), xml)?;
+
+        // Generate post-sitemap.xml (compatible with hexo-sitemap plugin)
+        self.generate_post_sitemap(posts)?;
+
+        tracing::info!(
+            "Generated sitemap.xml with {} URLs",
+            posts.len() + pages.len() + 2
+        );
+
+        Ok(())
+    }
+
+    /// Generate post-sitemap.xml (compatible with hexo-sitemap plugin format)
+    fn generate_post_sitemap(&self, posts: &[Post]) -> Result<()> {
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="sitemap.xsl"?>
+<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+
+"#,
+        );
+
+        // Add homepage
+        xml.push_str("    <url>\n");
+        xml.push_str(&format!(
+            "        <loc>{}/</loc>\n",
+            self.hexo.config.url.trim_end_matches('/')
+        ));
+        xml.push_str("        <changefreq>daily</changefreq>\n");
+        xml.push_str("        <priority>1</priority>\n");
+        xml.push_str("    </url>\n\n");
+
+        // Add all posts
+        for post in posts {
+            let lastmod = post.updated.unwrap_or(post.date);
+            xml.push_str("    <url>\n");
+            xml.push_str(&format!(
+                "        <loc>{}</loc>\n",
+                escape_xml(&post.permalink)
+            ));
+            xml.push_str(&format!(
+                "        <lastmod>{}</lastmod>\n",
+                lastmod.to_rfc3339()
+            ));
+            xml.push_str("        <changefreq>weekly</changefreq>\n");
+            xml.push_str("        <priority>0.6</priority>\n");
+            xml.push_str("\n    </url>\n\n");
+        }
+
+        xml.push_str("</urlset>\n");
+
+        fs::write(self.hexo.public_dir.join("post-sitemap.xml"), xml)?;
+
+        // Generate sitemap.xsl stylesheet
+        self.generate_sitemap_xsl()?;
+
+        Ok(())
+    }
+
+    /// Generate sitemap.xsl stylesheet for pretty display
+    fn generate_sitemap_xsl(&self) -> Result<()> {
+        let xsl = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:sitemap="http://www.sitemaps.org/schemas/sitemap/0.9">
+<xsl:output method="html" encoding="UTF-8" indent="yes"/>
+<xsl:template match="/">
+<html>
+<head>
+<title>XML Sitemap</title>
+<style type="text/css">
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; }
+h1 { color: #333; border-bottom: 2px solid #4a90d9; padding-bottom: 10px; }
+table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+th { background: #4a90d9; color: white; padding: 12px; text-align: left; }
+td { padding: 10px; border-bottom: 1px solid #ddd; }
+tr:hover { background: #f5f5f5; }
+a { color: #4a90d9; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.count { color: #666; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<h1>XML Sitemap</h1>
+<p class="count">Number of URLs: <xsl:value-of select="count(sitemap:urlset/sitemap:url)"/></p>
+<table>
+<tr><th>URL</th><th>Last Modified</th><th>Change Freq</th><th>Priority</th></tr>
+<xsl:for-each select="sitemap:urlset/sitemap:url">
+<tr>
+<td><a href="{sitemap:loc}"><xsl:value-of select="sitemap:loc"/></a></td>
+<td><xsl:value-of select="sitemap:lastmod"/></td>
+<td><xsl:value-of select="sitemap:changefreq"/></td>
+<td><xsl:value-of select="sitemap:priority"/></td>
+</tr>
+</xsl:for-each>
+</table>
+</body>
+</html>
+</xsl:template>
+</xsl:stylesheet>
+"#;
+
+        fs::write(self.hexo.public_dir.join("sitemap.xsl"), xsl)?;
+        Ok(())
+    }
+}
+
+/// Escape special XML characters
+fn escape_xml(s: &str) -> String {
+    sanitize_xml_chars(s)
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Escape content for use in CDATA sections
+/// The only sequence that breaks CDATA is "]]>" - we split it to "]]]]><![CDATA[>"
+fn escape_cdata(s: &str) -> String {
+    sanitize_xml_chars(s).replace("]]>", "]]]]><![CDATA[>")
+}
+
+/// Remove invalid XML characters (control characters except tab, newline, carriage return)
+fn sanitize_xml_chars(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            // Valid XML 1.0 characters:
+            // #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+            c == '\t'
+                || c == '\n'
+                || c == '\r'
+                || ('\u{0020}'..='\u{D7FF}').contains(&c)
+                || ('\u{E000}'..='\u{FFFD}').contains(&c)
+                || ('\u{10000}'..='\u{10FFFF}').contains(&c)
+        })
+        .collect()
+}
+
+/// Convert relative URLs in HTML content to absolute URLs
+/// Handles src="/..." and href="/..." patterns
+fn make_urls_absolute(html: &str, base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    // Handle src="/path" and href="/path" patterns
+    let result = html
+        .replace("src=\"/", &format!("src=\"{}/", base))
+        .replace("href=\"/", &format!("href=\"{}/", base));
+    result
+}
+
+/// Strip HTML tags from content (for generating plain text summaries)
+#[allow(dead_code)]
+fn strip_html(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+    result
 }
 
 /// Generate basic HTML without a theme

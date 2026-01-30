@@ -2717,6 +2717,50 @@ impl<'a> Evaluator<'a> {
                 }
             }
 
+            "toc" => {
+                // Table of contents generator
+                // toc(content) or toc(content, options)
+                if let Some(first_arg) = args.first() {
+                    let content = self.evaluate_to_value(first_arg)?.to_output_string();
+
+                    // Parse options from second argument
+                    let class_name = if args.len() >= 2 {
+                        // Try to parse the options object literal (e.g., { "class": "toc-nav" })
+                        if let Ok(obj) = self.parse_object_literal(&args[1]) {
+                            obj.get("class")
+                                .map(|v| v.to_output_string())
+                                .unwrap_or_else(|| "toc".to_string())
+                        } else {
+                            "toc".to_string()
+                        }
+                    } else {
+                        "toc".to_string()
+                    };
+
+                    let toc_html = crate::helpers::toc(&content, 6);
+
+                    // If no headings found, the result will be just "<ol class=\"toc\"></ol>"
+                    // Return empty string if no real content
+                    if toc_html.contains("<li") {
+                        // Replace default class names with custom class name if provided
+                        // toc -> {class_name}, toc-item -> {class_name}-item, etc.
+                        let toc_html = toc_html
+                            .replace("class=\"toc-item", &format!("class=\"{}-item", class_name))
+                            .replace("class=\"toc-link", &format!("class=\"{}-link", class_name))
+                            .replace("class=\"toc-text", &format!("class=\"{}-text", class_name))
+                            // Replace toc-level-N with {class_name}-level-N (as substring, not class attribute start)
+                            .replace("toc-level-", &format!("{}-level-", class_name))
+                            .replace("<ol>", &format!("<ol class=\"{}-child\">", class_name))
+                            .replace("class=\"toc\"", &format!("class=\"{}\"", class_name));
+                        Ok(EjsValue::String(toc_html))
+                    } else {
+                        Ok(EjsValue::String(String::new()))
+                    }
+                } else {
+                    Ok(EjsValue::String(String::new()))
+                }
+            }
+
             _ => {
                 // Try to handle method chaining on arrays, e.g., site.posts.sort('date', -1).limit(5)
                 // Check if this is a method call on an object (contains . before method name)
@@ -3676,7 +3720,9 @@ fn parse_object_pairs(inner: &str) -> Vec<(String, String)> {
                 in_value = true;
             }
             ',' if depth == 0 => {
-                let key = current_key.trim().to_string();
+                let key = current_key.trim();
+                // Strip quotes from key (e.g., "class" -> class)
+                let key = key.trim_matches('"').trim_matches('\'').to_string();
                 let value = current_value.trim().to_string();
                 if !key.is_empty() {
                     pairs.push((key, value));
@@ -3695,7 +3741,9 @@ fn parse_object_pairs(inner: &str) -> Vec<(String, String)> {
         }
     }
 
-    let key = current_key.trim().to_string();
+    let key = current_key.trim();
+    // Strip quotes from key (e.g., "class" -> class)
+    let key = key.trim_matches('"').trim_matches('\'').to_string();
     let value = current_value.trim().to_string();
     if !key.is_empty() {
         pairs.push((key, value));

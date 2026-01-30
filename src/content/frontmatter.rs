@@ -1,7 +1,7 @@
 //! Front-matter parsing
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
@@ -288,18 +288,14 @@ fn parse_date_string(s: &str) -> Option<DateTime<Local>> {
 
     for fmt in formats {
         if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(DateTime::from_naive_utc_and_offset(
-                dt,
-                *Local::now().offset(),
-            ));
+            // Interpret the naive datetime as local time, not UTC
+            return Local.from_local_datetime(&dt).single();
         }
         // Try parsing date only
         if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
             let dt = d.and_hms_opt(0, 0, 0)?;
-            return Some(DateTime::from_naive_utc_and_offset(
-                dt,
-                *Local::now().offset(),
-            ));
+            // Interpret the naive datetime as local time, not UTC
+            return Local.from_local_datetime(&dt).single();
         }
     }
 

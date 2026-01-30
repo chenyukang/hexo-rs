@@ -45,6 +45,11 @@ impl TemplateContext {
         self.inner.set_object(name, value);
     }
 
+    /// Set a nested object property using dot notation (e.g., "page.prev")
+    pub fn set_nested_object<T: Serialize>(&mut self, path: &str, value: &T) {
+        self.inner.set_nested_object(path, value);
+    }
+
     /// Get the inner EJS context
     pub fn inner(&self) -> &EjsContext {
         &self.inner

@@ -200,11 +200,106 @@ impl JsRuntime {
             }}
             
             // toc helper - generate table of contents from HTML content
-            // Returns empty string for now - actual TOC generation is complex
             function toc(content, options) {{
-                // Simplified: just return empty string
-                // The theme checks if toc() !== "" to decide whether to show catalog
-                return '';
+                if (!content) return '';
+                options = options || {{}};
+                var className = options['class'] || 'toc';
+                var listNumber = options.list_number !== false;
+                var maxDepth = options.max_depth || 6;
+                var minDepth = options.min_depth || 1;
+                
+                var headings = [];
+                var contentStr = String(content);
+                var i = 0;
+                
+                // Simple heading extraction without regex
+                while (i < contentStr.length) {{
+                    // Look for <h followed by a digit
+                    if (contentStr[i] === '<' && contentStr[i+1] === 'h') {{
+                        var levelChar = contentStr[i+2];
+                        var level = parseInt(levelChar);
+                        if (level >= minDepth && level <= maxDepth) {{
+                            // Find the end of opening tag
+                            var tagEnd = contentStr.indexOf('>', i);
+                            if (tagEnd !== -1) {{
+                                // Extract id from the tag if present
+                                var tagContent = contentStr.substring(i, tagEnd);
+                                var idMatch = tagContent.indexOf('id="');
+                                var headingId = '';
+                                if (idMatch !== -1) {{
+                                    var idStart = idMatch + 4;
+                                    var idEnd = tagContent.indexOf('"', idStart);
+                                    if (idEnd !== -1) {{
+                                        headingId = tagContent.substring(idStart, idEnd);
+                                    }}
+                                }}
+                                
+                                // Find closing tag
+                                var closeTag = '<' + '/h' + level + '>';
+                                var closePos = contentStr.indexOf(closeTag, tagEnd);
+                                if (closePos !== -1) {{
+                                    var headingText = contentStr.substring(tagEnd + 1, closePos);
+                                    // Strip HTML tags from heading text
+                                    headingText = strip_html(headingText);
+                                    
+                                    // Generate id if not present (use encodeURIComponent for non-ascii)
+                                    if (!headingId) {{
+                                        headingId = encodeURIComponent(headingText.toLowerCase().trim())
+                                            .replace(/%20/g, '-')
+                                            .replace(/%/g, '');
+                                    }}
+                                    
+                                    headings.push({{
+                                        level: level,
+                                        id: headingId,
+                                        text: headingText
+                                    }});
+                                    
+                                    i = closePos + closeTag.length;
+                                    continue;
+                                }}
+                            }}
+                        }}
+                    }}
+                    i++;
+                }}
+                
+                if (headings.length === 0) return '';
+                
+                // Build TOC HTML
+                var html = '<ol class="' + className + '">';
+                var prevLevel = 0;
+                
+                for (var j = 0; j < headings.length; j++) {{
+                    var h = headings[j];
+                    var level = h.level;
+                    
+                    // Adjust nesting
+                    while (prevLevel < level) {{
+                        if (prevLevel > 0) html += '<ol class="' + className + '-child">';
+                        prevLevel++;
+                    }}
+                    while (prevLevel > level) {{
+                        html += '<' + '/li><' + '/ol>';
+                        prevLevel--;
+                    }}
+                    if (j > 0 && prevLevel === level) {{
+                        html += '<' + '/li>';
+                    }}
+                    
+                    html += '<li class="' + className + '-item ' + className + '-level-' + level + '">';
+                    html += '<a class="' + className + '-link" href="' + '#' + h.id + '">';
+                    html += '<span class="' + className + '-text">' + h.text + '<' + '/span>';
+                    html += '<' + '/a>';
+                }}
+                
+                // Close remaining tags
+                while (prevLevel > 0) {{
+                    html += '<' + '/li><' + '/ol>';
+                    prevLevel--;
+                }}
+                
+                return html;
             }}
             
             // favicon_tag helper - generate link tag for favicon

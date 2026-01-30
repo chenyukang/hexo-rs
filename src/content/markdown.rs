@@ -1,17 +1,15 @@
 //! Markdown rendering with syntax highlighting
 
 use anyhow::Result;
-use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
-use syntect::highlighting::ThemeSet;
-use syntect::html::highlighted_html_for_string;
+use pulldown_cmark::{
+    html, CodeBlockKind, CowStr, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
+};
+use syntect::html::{ClassStyle, ClassedHTMLGenerator};
 use syntect::parsing::SyntaxSet;
 
-/// Markdown renderer with syntax highlighting
+/// Markdown renderer
 pub struct MarkdownRenderer {
     syntax_set: SyntaxSet,
-    theme_set: ThemeSet,
-    theme_name: String,
-    line_numbers: bool,
 }
 
 impl MarkdownRenderer {
@@ -19,20 +17,12 @@ impl MarkdownRenderer {
     pub fn new() -> Self {
         Self {
             syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
-            theme_name: "base16-ocean.dark".to_string(),
-            line_numbers: true,
         }
     }
 
-    /// Create with custom settings
-    pub fn with_options(theme: &str, line_numbers: bool) -> Self {
-        Self {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
-            theme_set: ThemeSet::load_defaults(),
-            theme_name: theme.to_string(),
-            line_numbers,
-        }
+    /// Create with custom settings (kept for API compatibility)
+    pub fn with_options(_theme: &str, _line_numbers: bool) -> Self {
+        Self::new()
     }
 
     /// Render markdown to HTML
@@ -52,6 +42,14 @@ impl MarkdownRenderer {
         let mut events: Vec<Event> = Vec::new();
         let mut code_block_lang: Option<String> = None;
         let mut code_block_content = String::new();
+
+        // Track heading state for adding IDs and anchor links
+        let mut in_heading: Option<HeadingLevel> = None;
+        let mut heading_text = String::new();
+
+        // Track link state for adding target="_blank" to external links
+        let mut in_external_link: Option<(String, String)> = None; // (url, title)
+        let mut link_text = String::new();
 
         for event in parser {
             match event {
@@ -74,18 +72,101 @@ impl MarkdownRenderer {
                         self.highlight_code(&code_block_content, code_block_lang.as_deref());
                     events.push(Event::Html(CowStr::from(highlighted)));
                     code_block_lang = None;
+                    code_block_content.clear();
                 }
-                Event::Text(text)
-                    if code_block_lang.is_some() || !code_block_content.is_empty() =>
-                {
+                Event::Text(text) if code_block_lang.is_some() => {
                     code_block_content.push_str(&text);
                 }
-                Event::Text(text) if code_block_lang.is_none() && code_block_content.is_empty() => {
-                    // Check if we're in a code block context
-                    events.push(Event::Text(text));
+                // Handle heading start - capture the level and prepare to collect text
+                Event::Start(Tag::Heading { level, .. }) => {
+                    in_heading = Some(level);
+                    heading_text.clear();
+                }
+                // Collect text inside headings
+                Event::Text(ref text) if in_heading.is_some() => {
+                    heading_text.push_str(text);
+                    // Don't push the event yet, we'll create a custom heading
+                }
+                Event::Code(ref code) if in_heading.is_some() => {
+                    heading_text.push_str(code);
+                    // Don't push the event yet
+                }
+                // Handle heading end - generate heading with ID and anchor
+                Event::End(TagEnd::Heading(level)) => {
+                    if in_heading.is_some() {
+                        // Generate ID from heading text (Hexo style: preserve Chinese, replace spaces with -)
+                        let id = generate_heading_id(&heading_text);
+                        let level_num = heading_level_to_u8(level);
+
+                        // Generate heading HTML like Hexo:
+                        let escaped_id = html_escape_attr(&id);
+                        let escaped_title = html_escape_attr(&heading_text);
+                        let escaped_text = html_escape(&heading_text);
+                        let heading_html = format!(
+                            "<h{} id=\"{}\"><a href=\"#{}\" class=\"headerlink\" title=\"{}\"></a>{}</h{}>",
+                            level_num, escaped_id, escaped_id, escaped_title, escaped_text, level_num
+                        );
+
+                        events.push(Event::Html(CowStr::from(heading_html)));
+                        in_heading = None;
+                        heading_text.clear();
+                    }
+                }
+                // Handle external links - add target="_blank" rel="noopener"
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    ..
+                }) => {
+                    let url = dest_url.to_string();
+                    let is_external = url.starts_with("http://") || url.starts_with("https://");
+
+                    if is_external && link_type != LinkType::Email {
+                        in_external_link = Some((url, title.to_string()));
+                        link_text.clear();
+                    } else {
+                        // Internal link, pass through normally
+                        events.push(Event::Start(Tag::Link {
+                            link_type,
+                            dest_url,
+                            title,
+                            id: CowStr::Borrowed(""),
+                        }));
+                    }
+                }
+                // Collect text inside external links
+                Event::Text(ref text) if in_external_link.is_some() => {
+                    link_text.push_str(text);
+                }
+                Event::Code(ref code) if in_external_link.is_some() => {
+                    link_text.push_str(&format!("<code>{}</code>", html_escape(code)));
+                }
+                // Handle external link end
+                Event::End(TagEnd::Link) => {
+                    if let Some((url, title)) = in_external_link.take() {
+                        let title_attr = if title.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" title=\"{}\"", html_escape_attr(&title))
+                        };
+                        let link_html = format!(
+                            "<a target=\"_blank\" rel=\"noopener\" href=\"{}\"{}>{}</a>",
+                            html_escape_attr(&url),
+                            title_attr,
+                            link_text
+                        );
+                        events.push(Event::Html(CowStr::from(link_html)));
+                        link_text.clear();
+                    } else {
+                        events.push(Event::End(TagEnd::Link));
+                    }
                 }
                 _ => {
-                    if code_block_lang.is_none() {
+                    if code_block_lang.is_none()
+                        && in_heading.is_none()
+                        && in_external_link.is_none()
+                    {
                         events.push(event);
                     }
                 }
@@ -98,74 +179,41 @@ impl MarkdownRenderer {
         Ok(html_output)
     }
 
-    /// Highlight a code block
+    /// Highlight a code block - output Prism.js compatible format with syntax highlighting
     fn highlight_code(&self, code: &str, lang: Option<&str>) -> String {
-        let lang = lang.unwrap_or("text");
+        let lang = lang.unwrap_or("plain");
 
         // Try to find syntax for the language
         let syntax = self
             .syntax_set
             .find_syntax_by_token(lang)
-            .or_else(|| self.syntax_set.find_syntax_by_extension(lang))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+            .or_else(|| self.syntax_set.find_syntax_by_extension(lang));
 
-        let theme = self
-            .theme_set
-            .themes
-            .get(&self.theme_name)
-            .unwrap_or_else(|| {
-                self.theme_set
-                    .themes
-                    .values()
-                    .next()
-                    .expect("No themes available")
-            });
+        let highlighted = if let Some(syntax) = syntax {
+            // Use ClassedHTMLGenerator with Prism-compatible class names
+            let mut generator = ClassedHTMLGenerator::new_with_class_style(
+                syntax,
+                &self.syntax_set,
+                ClassStyle::Spaced,
+            );
 
-        match highlighted_html_for_string(code, &self.syntax_set, syntax, theme) {
-            Ok(highlighted) => {
-                if self.line_numbers {
-                    self.add_line_numbers(&highlighted, lang)
-                } else {
-                    format!(
-                        r#"<pre><code class="language-{}">{}</code></pre>"#,
-                        lang, highlighted
-                    )
-                }
-            }
-            Err(_) => {
-                // Fallback to plain code block
-                let escaped = html_escape(code);
-                format!(
-                    r#"<pre><code class="language-{}">{}</code></pre>"#,
-                    lang, escaped
-                )
-            }
-        }
-    }
-
-    /// Add line numbers to highlighted code
-    fn add_line_numbers(&self, code: &str, lang: &str) -> String {
-        let lines: Vec<&str> = code.lines().collect();
-        let line_count = lines.len();
-
-        let mut gutter = String::new();
-        let mut code_lines = String::new();
-
-        for (i, line) in lines.iter().enumerate() {
-            gutter.push_str(&format!(r#"<span class="line-number">{}</span>"#, i + 1));
-            if i < line_count - 1 {
-                gutter.push('\n');
+            for line in syntect::util::LinesWithEndings::from(code) {
+                let _ = generator.parse_html_for_line_which_includes_newline(line);
             }
 
-            code_lines.push_str(line);
-            if i < line_count - 1 {
-                code_lines.push('\n');
-            }
-        }
+            let html = generator.finalize();
+            // Convert syntect class names to Prism.js token format
+            convert_to_prism_tokens(&html)
+        } else {
+            // No syntax found, just escape the code
+            html_escape(code)
+        };
 
+        // Output Prism.js compatible format:
+        // <pre class="line-numbers language-rust" data-language="rust"><code class="language-rust">...</code></pre>
         format!(
-            r#"<figure class="highlight {}"><table><tr><td class="gutter"><pre>{}</pre></td><td class="code"><pre>{}</pre></td></tr></table></figure>"#,
-            lang, gutter, code_lines
+            "<pre class=\"line-numbers language-{}\" data-language=\"{}\"><code class=\"language-{}\">{}</code></pre>",
+            lang, lang, lang, highlighted
         )
     }
 
@@ -197,6 +245,98 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// HTML escaping for attributes (also escapes quotes)
+fn html_escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Generate heading ID from text (Hexo style)
+/// Preserves Chinese characters, replaces spaces with hyphens
+fn generate_heading_id(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else if c.is_whitespace() {
+                '-'
+            } else if c > '\u{007F}' {
+                // Keep non-ASCII characters (Chinese, Japanese, etc.)
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        // Remove consecutive hyphens
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Convert HeadingLevel to u8
+fn heading_level_to_u8(level: pulldown_cmark::HeadingLevel) -> u8 {
+    match level {
+        pulldown_cmark::HeadingLevel::H1 => 1,
+        pulldown_cmark::HeadingLevel::H2 => 2,
+        pulldown_cmark::HeadingLevel::H3 => 3,
+        pulldown_cmark::HeadingLevel::H4 => 4,
+        pulldown_cmark::HeadingLevel::H5 => 5,
+        pulldown_cmark::HeadingLevel::H6 => 6,
+    }
+}
+
+/// Convert syntect class names to Prism.js token format
+/// syntect outputs: <span class="source rust"><span class="storage type">fn</span>...
+/// Prism expects: <span class="token keyword">fn</span>...
+fn convert_to_prism_tokens(html: &str) -> String {
+    // Map syntect scope names to Prism token types
+    let replacements = [
+        // Keywords
+        ("class=\"storage type", "class=\"token keyword"),
+        ("class=\"storage modifier", "class=\"token keyword"),
+        ("class=\"keyword control", "class=\"token keyword"),
+        ("class=\"keyword operator", "class=\"token operator"),
+        ("class=\"keyword other", "class=\"token keyword"),
+        // Types and classes
+        ("class=\"entity name type", "class=\"token class-name"),
+        ("class=\"entity name class", "class=\"token class-name"),
+        ("class=\"entity name function", "class=\"token function"),
+        ("class=\"support type", "class=\"token class-name"),
+        ("class=\"support class", "class=\"token class-name"),
+        ("class=\"support function", "class=\"token function"),
+        // Strings
+        ("class=\"string quoted", "class=\"token string"),
+        ("class=\"string", "class=\"token string"),
+        // Numbers
+        ("class=\"constant numeric", "class=\"token number"),
+        ("class=\"constant language", "class=\"token boolean"),
+        ("class=\"constant other", "class=\"token constant"),
+        // Comments
+        ("class=\"comment line", "class=\"token comment"),
+        ("class=\"comment block", "class=\"token comment"),
+        ("class=\"comment", "class=\"token comment"),
+        // Punctuation
+        ("class=\"punctuation", "class=\"token punctuation"),
+        // Operators
+        ("class=\"keyword operator", "class=\"token operator"),
+        // Variables
+        ("class=\"variable", "class=\"token variable"),
+        // Meta/other - just remove these wrapper spans
+        ("class=\"source", "class=\"token"),
+        ("class=\"meta", "class=\"token"),
+    ];
+
+    let mut result = html.to_string();
+    for (from, to) in replacements {
+        result = result.replace(from, to);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +345,10 @@ mod tests {
     fn test_render_basic_markdown() {
         let renderer = MarkdownRenderer::new();
         let html = renderer.render("# Hello World\n\nThis is a test.").unwrap();
-        assert!(html.contains("<h1>Hello World</h1>"));
+        // Headings now include id and anchor link
+        assert!(html.contains(r#"<h1 id="Hello-World">"#));
+        assert!(html.contains(r#"class="headerlink""#));
+        assert!(html.contains("Hello World</h1>"));
         assert!(html.contains("<p>This is a test.</p>"));
     }
 
@@ -213,7 +356,12 @@ mod tests {
     fn test_render_code_block() {
         let renderer = MarkdownRenderer::new();
         let html = renderer.render("```rust\nfn main() {}\n```").unwrap();
-        assert!(html.contains("highlight"));
+        println!("Generated HTML: {}", html);
+        // Should output Prism.js compatible format
+        assert!(html.contains("line-numbers language-rust"));
+        assert!(html.contains("language-rust"));
+        // The code content should be present (possibly with span tags around keywords)
+        assert!(html.contains("fn") && html.contains("main"));
     }
 
     #[test]
