@@ -4,6 +4,8 @@ A static site generator written in Rust, designed to be compatible with Hexo the
 
 My blog is using Hexo, but I don't want to install Node.js and all the dependencies just to generate static files. So I wrote this project to generate Hexo sites using Rust.
 
+**This project was built entirely through vibe coding with AI!**
+
 Note: hexo-rs don't support all Hexo features, please read the "Limitations" section below.
 
 ## Features
@@ -15,7 +17,13 @@ Note: hexo-rs don't support all Hexo features, please read the "Limitations" sec
 ## Installation
 
 ```bash
-cargo install --path .
+cargo install hexo-rs
+```
+
+Or with cargo-binstall (faster, downloads prebuilt binary):
+
+```bash
+cargo binstall hexo-rs
 ```
 
 ## Usage
