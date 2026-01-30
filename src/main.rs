@@ -108,7 +108,9 @@ async fn main() -> Result<()> {
     };
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -127,13 +129,21 @@ async fn main() -> Result<()> {
             println!("Initialized empty Hexo site in {:?}", target_dir);
         }
 
-        Commands::New { layout, title, path } => {
+        Commands::New {
+            layout,
+            title,
+            path,
+        } => {
             let hexo = hexo_rs::Hexo::new(&base_dir)?;
             tracing::info!("Creating new {} with title: {}", layout, title);
             hexo_rs::commands::new::create_post(&hexo, &title, &layout, path.as_deref())?;
         }
 
-        Commands::Generate { watch, deploy: _, force } => {
+        Commands::Generate {
+            watch,
+            deploy: _,
+            force,
+        } => {
             let hexo = hexo_rs::Hexo::new(&base_dir)?;
             tracing::info!("Generating static files...");
 
@@ -150,7 +160,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Server { port, ip, open, r#static } => {
+        Commands::Server {
+            port,
+            ip,
+            open,
+            r#static,
+        } => {
             let hexo = hexo_rs::Hexo::new(&base_dir)?;
 
             // Generate first

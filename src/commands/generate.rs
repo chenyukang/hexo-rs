@@ -42,17 +42,11 @@ pub async fn watch(hexo: &Hexo) -> Result<()> {
     })?;
 
     // Watch source directory
-    watcher.watch(
-        hexo.source_dir.as_ref(),
-        notify::RecursiveMode::Recursive,
-    )?;
+    watcher.watch(hexo.source_dir.as_ref(), notify::RecursiveMode::Recursive)?;
 
     // Watch theme directory
     if hexo.theme_dir.exists() {
-        watcher.watch(
-            hexo.theme_dir.as_ref(),
-            notify::RecursiveMode::Recursive,
-        )?;
+        watcher.watch(hexo.theme_dir.as_ref(), notify::RecursiveMode::Recursive)?;
     }
 
     // Watch config file

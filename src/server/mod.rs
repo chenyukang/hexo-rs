@@ -121,19 +121,25 @@ async fn watch_and_reload(
 
     // Watch source directory
     if source_dir.exists() {
-        debouncer.watcher().watch(&source_dir, RecursiveMode::Recursive)?;
+        debouncer
+            .watcher()
+            .watch(&source_dir, RecursiveMode::Recursive)?;
         tracing::debug!("Watching: {:?}", source_dir);
     }
 
     // Watch theme directory
     if theme_dir.exists() {
-        debouncer.watcher().watch(&theme_dir, RecursiveMode::Recursive)?;
+        debouncer
+            .watcher()
+            .watch(&theme_dir, RecursiveMode::Recursive)?;
         tracing::debug!("Watching: {:?}", theme_dir);
     }
 
     // Watch config file
     if config_path.exists() {
-        debouncer.watcher().watch(&config_path, RecursiveMode::NonRecursive)?;
+        debouncer
+            .watcher()
+            .watch(&config_path, RecursiveMode::NonRecursive)?;
         tracing::debug!("Watching: {:?}", config_path);
     }
 
@@ -240,14 +246,14 @@ async fn fallback_handler(
     request: Request<Body>,
 ) -> Response {
     let path = request.uri().path();
-    
+
     // Determine the file path
     let file_path = if path == "/" {
         state.public_dir.join("index.html")
     } else {
         let clean_path = path.trim_start_matches('/');
         let candidate = state.public_dir.join(clean_path);
-        
+
         // If it's a directory, look for index.html
         if candidate.is_dir() {
             candidate.join("index.html")
