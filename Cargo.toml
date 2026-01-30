@@ -5,8 +5,8 @@ edition = "2021"
 authors = ["Yukang Chen"]
 description = "A fast static site generator compatible with Hexo themes"
 license = "MIT"
-repository = "https://github.com/ponyma/hexo-rs"
-keywords = ["hexo", "static-site-generator", "blog", "markdown"]
+repository = "https://github.com/chenyukang/hexo-rs"
+keywords = ["hexo", "static-site", "blog", "markdown", "ssg"]
 categories = ["command-line-utilities", "web-programming"]
 
 [dependencies]
