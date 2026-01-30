@@ -230,10 +230,15 @@ impl<'a> Generator<'a> {
             let end = (start + per_page).min(posts.len());
             let page_posts = &posts[start..end];
 
-            let (output_path, current_url) = if page_num == 1 {
-                (self.hexo.public_dir.clone(), self.hexo.config.root.clone())
+            let (output_path, current_url, path) = if page_num == 1 {
+                // For home page, path should be empty string (no leading slash)
+                (
+                    self.hexo.public_dir.clone(),
+                    self.hexo.config.root.clone(),
+                    String::new(),
+                )
             } else {
-                let path = self
+                let output = self
                     .hexo
                     .public_dir
                     .join(&self.hexo.config.pagination_dir)
@@ -242,7 +247,8 @@ impl<'a> Generator<'a> {
                     "{}{}/{}/",
                     self.hexo.config.root, self.hexo.config.pagination_dir, page_num
                 );
-                (path, url)
+                let p = format!("{}/{}/", self.hexo.config.pagination_dir, page_num);
+                (output, url, p)
             };
 
             fs::create_dir_all(&output_path)?;
@@ -292,7 +298,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("site", site_data);
                 ctx.set_object("page", &page_info);
                 ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &current_url);
+                ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 // Pre-set wordCount for templates that use complex JS expressions
                 ctx.set_number("wordCount", site_data.word_count as f64);
@@ -330,13 +336,16 @@ impl<'a> Generator<'a> {
             let year_dir = archive_dir.join(year.to_string());
             fs::create_dir_all(&year_dir)?;
 
+            let current_url = format!(
+                "{}{}/{}/",
+                self.hexo.config.root, self.hexo.config.archive_dir, year
+            );
+            // Path without leading slash for consistency with page paths
+            let path = format!("{}/{}/", self.hexo.config.archive_dir, year);
             let page_info = PaginationInfo {
                 is_archive: true,
                 year: Some(*year),
-                current_url: format!(
-                    "{}{}/{}/",
-                    self.hexo.config.root, self.hexo.config.archive_dir, year
-                ),
+                current_url: current_url.clone(),
                 ..Default::default()
             };
 
@@ -364,13 +373,12 @@ impl<'a> Generator<'a> {
                     word_count: site_data.word_count,
                 };
 
-                let current_url = page_info.current_url.clone();
                 let mut ctx = TemplateContext::new();
                 ctx.set_object("config", &self.hexo.config);
                 ctx.set_object("site", &filtered_site);
                 ctx.set_object("page", &page_info);
                 ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &current_url);
+                ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
             } else {
@@ -383,6 +391,8 @@ impl<'a> Generator<'a> {
 
         // Generate main archive page - pass all posts
         let current_url = format!("{}{}/", self.hexo.config.root, self.hexo.config.archive_dir);
+        // Path should not have leading slash for consistency with page paths
+        let path = format!("{}/", self.hexo.config.archive_dir);
         let page_info = PaginationInfo {
             is_archive: true,
             current_url: current_url.clone(),
@@ -395,7 +405,7 @@ impl<'a> Generator<'a> {
             ctx.set_object("site", site_data);
             ctx.set_object("page", &page_info);
             ctx.set_object("theme", theme.config());
-            ctx.set_string("path", &current_url);
+            ctx.set_string("path", &path);
             ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
             theme.render_with_layout("archive", &ctx)?
         } else {
@@ -429,6 +439,8 @@ impl<'a> Generator<'a> {
                 "{}{}/{}/",
                 self.hexo.config.root, self.hexo.config.category_dir, slug
             );
+            // Path without leading slash for consistency with page paths
+            let path = format!("{}/{}/", self.hexo.config.category_dir, slug);
             let page_info = PaginationInfo {
                 is_category: true,
                 category: Some(category.clone()),
@@ -443,7 +455,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("page", &page_info);
                 ctx.set_object("page.posts", cat_posts);
                 ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &current_url);
+                ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
 
                 let template = theme
@@ -484,6 +496,8 @@ impl<'a> Generator<'a> {
                 "{}{}/{}/",
                 self.hexo.config.root, self.hexo.config.tag_dir, slug
             );
+            // Path without leading slash for consistency with page paths
+            let path = format!("{}/{}/", self.hexo.config.tag_dir, slug);
             let page_info = PaginationInfo {
                 is_tag: true,
                 tag: Some(tag.clone()),
@@ -525,7 +539,7 @@ impl<'a> Generator<'a> {
                 ctx.set_object("site", &filtered_site);
                 ctx.set_object("page", &page_info);
                 ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &current_url);
+                ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
             } else {
