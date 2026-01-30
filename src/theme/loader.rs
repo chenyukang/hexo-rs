@@ -312,11 +312,11 @@ impl ThemeLoader {
         } else {
             // Use fast EJS engine for simple partials
             let mut merged_context = parent_context.clone();
-            if let Ok(locals) = serde_json::from_str::<serde_json::Value>(locals_json) {
-                if let serde_json::Value::Object(obj) = locals {
-                    for (k, v) in obj {
-                        merged_context.inner_mut().set(&k, EjsValue::from_json(&v));
-                    }
+            if let Ok(serde_json::Value::Object(obj)) =
+                serde_json::from_str::<serde_json::Value>(locals_json)
+            {
+                for (k, v) in obj {
+                    merged_context.inner_mut().set(&k, EjsValue::from_json(&v));
                 }
             }
 
@@ -462,26 +462,106 @@ impl ThemeLoader {
         {
             let path = entry.path();
 
-            // Skip hidden files and directories starting with _
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('_') || name.starts_with('.') {
-                continue;
-            }
-
             if path.is_file() {
                 let relative = path.strip_prefix(&source_dir)?;
-                let dest = public_dir.join(relative);
 
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent)?;
+                // Skip files in directories starting with _ or . (e.g., _partial/)
+                let should_skip = relative.components().any(|c| {
+                    c.as_os_str()
+                        .to_str()
+                        .map(|s| s.starts_with('_') || s.starts_with('.'))
+                        .unwrap_or(false)
+                });
+                if should_skip {
+                    continue;
                 }
 
-                fs::copy(path, &dest)?;
-                tracing::debug!("Copied: {:?} -> {:?}", path, dest);
+                let ext = path.extension().and_then(|e| e.to_str());
+
+                // Handle Stylus files - compile to CSS
+                if ext == Some("styl") {
+                    // Check if there's a pre-compiled CSS file
+                    let css_path = path.with_extension("css");
+                    if css_path.exists() {
+                        // Use pre-compiled CSS
+                        let css_relative = relative.with_extension("css");
+                        let dest = public_dir.join(&css_relative);
+                        if let Some(parent) = dest.parent() {
+                            fs::create_dir_all(parent)?;
+                        }
+                        fs::copy(&css_path, &dest)?;
+                        tracing::debug!("Copied pre-compiled CSS: {:?} -> {:?}", css_path, dest);
+                    } else {
+                        // Try to compile with npx stylus
+                        let css_relative = relative.with_extension("css");
+                        let dest = public_dir.join(&css_relative);
+
+                        if let Some(parent) = dest.parent() {
+                            fs::create_dir_all(parent)?;
+                        }
+
+                        match compile_stylus(path, &source_dir) {
+                            Ok(css) => {
+                                fs::write(&dest, css)?;
+                                tracing::info!("Compiled Stylus: {:?} -> {:?}", path, dest);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to compile {:?}: {}. \
+                                    Please run 'npx stylus {} -o {}' to pre-compile, \
+                                    or place a pre-compiled style.css alongside the .styl file.",
+                                    path,
+                                    e,
+                                    path.display(),
+                                    path.parent().unwrap_or(Path::new(".")).display()
+                                );
+                                return Err(anyhow!(
+                                    "Stylus compilation failed for {:?}. \
+                                    Install stylus (npm install -g stylus) or provide pre-compiled CSS.",
+                                    path
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    let dest = public_dir.join(relative);
+
+                    if let Some(parent) = dest.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+
+                    fs::copy(path, &dest)?;
+                    tracing::debug!("Copied: {:?} -> {:?}", path, dest);
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+/// Compile a Stylus file to CSS using npx stylus
+fn compile_stylus(styl_path: &Path, include_dir: &Path) -> Result<String> {
+    use std::process::Command;
+
+    // Try npx stylus first
+    let output = Command::new("npx")
+        .args([
+            "stylus",
+            "--print",
+            "--include",
+            include_dir.to_str().unwrap_or("."),
+            styl_path.to_str().unwrap_or(""),
+        ])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(anyhow!("Stylus compilation failed: {}", stderr))
+        }
+        Err(e) => Err(anyhow!("Failed to run npx stylus: {}", e)),
     }
 }
 

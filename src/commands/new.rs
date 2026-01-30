@@ -52,13 +52,12 @@ pub fn create_post(hexo: &Hexo, title: &str, layout: &str, path: Option<&str>) -
         fs::read_to_string(&scaffold_path)?
     } else {
         // Default scaffold
-        format!(
-            r#"---
-title: {{{{ title }}}}
-date: {{{{ date }}}}
+        r#"---
+title: {{ title }}
+date: {{ date }}
 ---
 "#
-        )
+        .to_string()
     };
 
     // Replace template variables

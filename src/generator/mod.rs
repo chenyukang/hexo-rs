@@ -211,7 +211,7 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
 
-        let total_pages = (posts.len() + per_page - 1) / per_page;
+        let total_pages = posts.len().div_ceil(per_page);
 
         for page_num in 1..=total_pages {
             let start = (page_num - 1) * per_page;
@@ -240,7 +240,7 @@ impl<'a> Generator<'a> {
                 total: total_pages,
                 current: page_num,
                 current_url: current_url.clone(),
-                prev: if page_num > 1 { page_num - 1 } else { 0 },
+                prev: page_num.saturating_sub(1),
                 prev_link: if page_num > 1 {
                     if page_num == 2 {
                         self.hexo.config.root.clone()
@@ -360,7 +360,7 @@ impl<'a> Generator<'a> {
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
             } else {
-                let posts_vec: Vec<&Post> = year_posts.iter().copied().collect();
+                let posts_vec: Vec<&Post> = year_posts.to_vec();
                 generate_archive_html(&posts_vec, &format!("Archive: {}", year))
             };
 
@@ -435,7 +435,7 @@ impl<'a> Generator<'a> {
 
                 theme.render_with_layout(&template, &ctx)?
             } else {
-                let posts_vec: Vec<&Post> = cat_posts.iter().copied().collect();
+                let posts_vec: Vec<&Post> = cat_posts.to_vec();
                 generate_archive_html(&posts_vec, &format!("Category: {}", category))
             };
 
@@ -510,7 +510,7 @@ impl<'a> Generator<'a> {
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
                 theme.render_with_layout("archive", &ctx)?
             } else {
-                let posts_vec: Vec<&Post> = tag_posts.iter().copied().collect();
+                let posts_vec: Vec<&Post> = tag_posts.to_vec();
                 generate_archive_html(&posts_vec, &format!("Tag: {}", tag))
             };
 

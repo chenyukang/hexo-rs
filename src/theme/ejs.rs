@@ -415,14 +415,12 @@ impl Parser {
                 let stmt = remaining[..end_pos].trim();
 
                 // Parse var declaration
-                let kw_len = if stmt.starts_with("const ") {
-                    6
-                } else if stmt.starts_with("let ") {
-                    4
-                } else {
-                    4
-                };
-                let rest = stmt[kw_len..].trim().trim_end_matches(';');
+                let rest = stmt
+                    .strip_prefix("const ")
+                    .or_else(|| stmt.strip_prefix("let "))
+                    .or_else(|| stmt.strip_prefix("var "))
+                    .unwrap_or(stmt);
+                let rest = rest.trim().trim_end_matches(';');
 
                 if let Some(eq_pos) = rest.find('=') {
                     let name = rest[..eq_pos].trim().to_string();
@@ -835,11 +833,11 @@ impl Parser {
 
     /// Parse a variable declaration
     fn parse_var_decl(&mut self, code: &str) -> Result<Option<AstNode>, EjsError> {
-        let rest = if code.starts_with("const ") {
-            &code[6..]
-        } else {
-            &code[4..]
-        };
+        let rest = code
+            .strip_prefix("const ")
+            .or_else(|| code.strip_prefix("let "))
+            .or_else(|| code.strip_prefix("var "))
+            .unwrap_or(code);
         let rest = rest.trim().trim_end_matches(';');
 
         if let Some(eq_pos) = rest.find('=') {
@@ -1514,9 +1512,9 @@ impl<'a> Evaluator<'a> {
                     // Chained call: base().method() or base().method(args)
                     // Find the last method call
                     let rest = &expr[first_close + 1..];
-                    if rest.starts_with('.') {
+                    if let Some(method_part) = rest.strip_prefix('.') {
                         // We have a method call on the result
-                        let method_part = &rest[1..]; // skip the '.'
+                        // skip the '.'
                         if let Some(method_paren) = method_part.find('(') {
                             let method_name = &method_part[..method_paren];
                             let base_expr = &expr[..first_close + 1];
@@ -1579,8 +1577,8 @@ impl<'a> Evaluator<'a> {
         }
 
         // Negation
-        if expr.starts_with('!') {
-            let inner = self.evaluate_to_value(expr[1..].trim())?;
+        if let Some(rest) = expr.strip_prefix('!') {
+            let inner = self.evaluate_to_value(rest.trim())?;
             return Ok(EjsValue::Bool(!inner.is_truthy()));
         }
 
@@ -1714,7 +1712,7 @@ impl<'a> Evaluator<'a> {
 
             if remaining.starts_with('.') {
                 remaining = &remaining[1..];
-                if let Some(dot_pos) = remaining.find(|c| c == '[' || c == '.') {
+                if let Some(dot_pos) = remaining.find(['[', '.']) {
                     let part = &remaining[..dot_pos];
                     if let Some(val) = current.get_property(part) {
                         current = val.clone();
@@ -1800,10 +1798,8 @@ impl<'a> Evaluator<'a> {
         let expr = expr.trim();
 
         if !expr.starts_with('{') || !expr.ends_with('}') {
-            if let Ok(val) = self.evaluate_to_value(expr) {
-                if let EjsValue::Object(obj) = val {
-                    return Ok(obj);
-                }
+            if let Ok(EjsValue::Object(obj)) = self.evaluate_to_value(expr) {
+                return Ok(obj);
             }
             return Ok(result);
         }
@@ -1937,13 +1933,13 @@ impl<'a> Evaluator<'a> {
                         EjsValue::Array(items) => {
                             let links: Vec<String> = items
                                 .iter()
-                                .map(|item| generate_link(item.to_output_string(), &root))
+                                .map(|item| generate_link(item.to_output_string(), root))
                                 .collect();
                             Ok(EjsValue::String(links.join("\n")))
                         }
                         _ => {
                             let path = value.to_output_string();
-                            Ok(EjsValue::String(generate_link(path, &root)))
+                            Ok(EjsValue::String(generate_link(path, root)))
                         }
                     }
                 } else {
@@ -1982,13 +1978,13 @@ impl<'a> Evaluator<'a> {
                         EjsValue::Array(items) => {
                             let scripts: Vec<String> = items
                                 .iter()
-                                .map(|item| generate_script(item.to_output_string(), &root))
+                                .map(|item| generate_script(item.to_output_string(), root))
                                 .collect();
                             Ok(EjsValue::String(scripts.join("\n")))
                         }
                         _ => {
                             let path = value.to_output_string();
-                            Ok(EjsValue::String(generate_script(path, &root)))
+                            Ok(EjsValue::String(generate_script(path, root)))
                         }
                     }
                 } else {
@@ -2734,8 +2730,7 @@ impl<'a> Evaluator<'a> {
                 }
 
                 // Handle new Date().getFullYear(), new Date().getMonth(), etc.
-                if func_name.starts_with("new Date().") {
-                    let method = &func_name["new Date().".len()..];
+                if let Some(method) = func_name.strip_prefix("new Date().") {
                     let now = chrono::Utc::now();
                     match method {
                         "getFullYear" => return Ok(EjsValue::Number(now.year() as f64)),
@@ -2803,14 +2798,10 @@ impl<'a> Evaluator<'a> {
 
                     // Get sort direction (second argument, e.g., -1 for descending)
                     let descending = if args.len() >= 2 {
-                        if let Ok(val) = self.evaluate_to_value(&args[1]) {
-                            match val {
-                                EjsValue::Number(n) => n < 0.0,
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        }
+                        matches!(
+                            self.evaluate_to_value(&args[1]),
+                            Ok(EjsValue::Number(n)) if n < 0.0
+                        )
                     } else {
                         // Also check if key starts with '-' for descending
                         sort_key.starts_with('-')
@@ -3088,7 +3079,7 @@ impl<'a> Evaluator<'a> {
             "year" => {
                 let s = base.to_output_string();
                 // Try to extract year from date string formats like "2025-09-27" or "2025/09/27"
-                if let Some(year_str) = s.split(|c| c == '-' || c == '/').next() {
+                if let Some(year_str) = s.split(['-', '/']).next() {
                     if let Ok(year) = year_str.parse::<f64>() {
                         return Ok(EjsValue::Number(year));
                     }
@@ -3099,7 +3090,7 @@ impl<'a> Evaluator<'a> {
             "month" => {
                 let s = base.to_output_string();
                 // Extract month from date string (1-indexed in JS Date, 0-indexed here to match JS)
-                let parts: Vec<&str> = s.split(|c| c == '-' || c == '/').collect();
+                let parts: Vec<&str> = s.split(['-', '/']).collect();
                 if parts.len() >= 2 {
                     if let Ok(month) = parts[1].parse::<f64>() {
                         return Ok(EjsValue::Number(month - 1.0)); // JS months are 0-indexed
@@ -3110,7 +3101,7 @@ impl<'a> Evaluator<'a> {
 
             "date" | "day" => {
                 let s = base.to_output_string();
-                let parts: Vec<&str> = s.split(|c| c == '-' || c == '/').collect();
+                let parts: Vec<&str> = s.split(['-', '/']).collect();
                 if parts.len() >= 3 {
                     if let Ok(day) = parts[2].parse::<f64>() {
                         return Ok(EjsValue::Number(day));
@@ -3191,8 +3182,8 @@ impl<'a> Evaluator<'a> {
         }
 
         // Convert timestamp to DateTime
-        let dt = chrono::DateTime::from_timestamp_millis(timestamp)
-            .unwrap_or_else(|| chrono::Utc::now());
+        let dt =
+            chrono::DateTime::from_timestamp_millis(timestamp).unwrap_or_else(chrono::Utc::now);
 
         // Apply timezone
         let formatted = match timezone.as_str() {
@@ -3250,6 +3241,7 @@ impl EjsTemplate {
         self.ast_to_nodes(&self.ast)
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn ast_to_nodes(&self, ast: &[AstNode]) -> Vec<EjsNode> {
         let mut nodes = Vec::new();
         for node in ast {
@@ -3734,8 +3726,7 @@ fn extract_condition(code: &str) -> String {
         }
     }
 
-    if code.starts_with("if ") {
-        let rest = &code[3..];
+    if let Some(rest) = code.strip_prefix("if ") {
         if let Some(brace) = rest.find('{') {
             return rest[..brace].trim().to_string();
         }

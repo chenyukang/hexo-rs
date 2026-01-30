@@ -68,7 +68,7 @@ impl<'a> ContentLoader<'a> {
         let file_modified = metadata
             .modified()
             .ok()
-            .map(|t| chrono::DateTime::<Local>::from(t));
+            .map(chrono::DateTime::<Local>::from);
 
         // Determine dates
         let date = fm
@@ -192,7 +192,7 @@ impl<'a> ContentLoader<'a> {
         let file_modified = metadata
             .modified()
             .ok()
-            .map(|t| chrono::DateTime::<Local>::from(t));
+            .map(chrono::DateTime::<Local>::from);
 
         let date = fm
             .parse_date()
@@ -266,10 +266,7 @@ impl<'a> ContentLoader<'a> {
     ) -> String {
         let pattern = &self.hexo.config.permalink;
 
-        let category = categories
-            .first()
-            .map(|c| slug::slugify(c))
-            .unwrap_or_default();
+        let category = categories.first().map(slug::slugify).unwrap_or_default();
 
         let result = pattern
             .replace(":year", &date.format("%Y").to_string())

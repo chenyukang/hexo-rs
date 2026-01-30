@@ -210,8 +210,7 @@ impl FrontMatter {
 
     fn parse_json(content: &str) -> Result<(Self, &str)> {
         // JSON front-matter ends with ;;;
-        if content.starts_with(";;;") {
-            let rest = &content[3..];
+        if let Some(rest) = content.strip_prefix(";;;") {
             if let Some(end_pos) = rest.find(";;;") {
                 let json_content = &rest[..end_pos];
                 let remaining = &rest[end_pos + 3..];

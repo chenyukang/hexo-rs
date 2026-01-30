@@ -416,15 +416,15 @@ impl JsRuntime {
                     let tag_content: String = chars[start..end].iter().collect();
                     let tag_content = tag_content.trim();
 
-                    if tag_content.starts_with('-') {
+                    if let Some(rest) = tag_content.strip_prefix('-') {
                         // Raw output: <%- expr %>
-                        let expr = tag_content[1..].trim();
+                        let expr = rest.trim();
                         if !expr.is_empty() {
                             js_code.push_str(&format!("__output += ({});\n", expr));
                         }
-                    } else if tag_content.starts_with('=') {
+                    } else if let Some(rest) = tag_content.strip_prefix('=') {
                         // Escaped output: <%= expr %>
-                        let expr = tag_content[1..].trim();
+                        let expr = rest.trim();
                         if !expr.is_empty() {
                             js_code.push_str(&format!("__output += __escape({});\n", expr));
                         }
