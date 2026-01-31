@@ -410,6 +410,7 @@ pub fn detect_changes(
 }
 
 /// Update cache with current state
+#[allow(clippy::type_complexity)]
 pub fn update_cache(
     cache: &mut CacheDb,
     base_dir: &Path,

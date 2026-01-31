@@ -36,12 +36,7 @@ pub fn run_with_options(hexo: &Hexo, force: bool) -> Result<()> {
         .iter()
         .map(|p| {
             let hash = cache::hash_content(&p.raw);
-            (
-                p.source.clone(),
-                hash,
-                p.tags.clone(),
-                p.categories.clone(),
-            )
+            (p.source.clone(), hash, p.tags.clone(), p.categories.clone())
         })
         .collect();
 
@@ -55,7 +50,11 @@ pub fn run_with_options(hexo: &Hexo, force: bool) -> Result<()> {
 
     // Detect changes
     let changeset = if force || cache.post_count == 0 {
-        tracing::info!("Full generation (force={}, cache_empty={})", force, cache.post_count == 0);
+        tracing::info!(
+            "Full generation (force={}, cache_empty={})",
+            force,
+            cache.post_count == 0
+        );
         ChangeSet::full_rebuild()
     } else {
         cache::detect_changes(
