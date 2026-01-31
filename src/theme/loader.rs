@@ -209,11 +209,20 @@ impl ThemeLoader {
         // Use QuickJS only for archive template (has complex JS like .each(), .year())
         // Other templates use the fast EJS engine
         let body = if template_name == "archive" {
-            self.render_with_js_runtime(template_source, &render_context)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("JsRuntime failed for {}: {}", template_name, e);
-                    String::new()
-                })
+            // Check if we have pre-computed years data for optimization
+            let has_precomputed = render_context.inner().get("__years").is_some()
+                && render_context.inner().get("__yearsReversed").is_some();
+
+            if has_precomputed {
+                // Use optimized archive rendering with pre-computed data
+                self.render_archive_optimized(template_source, &render_context)?
+            } else {
+                self.render_with_js_runtime(template_source, &render_context)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("JsRuntime failed for {}: {}", template_name, e);
+                        String::new()
+                    })
+            }
         } else {
             // Use fast EJS engine for most templates
             let template = self.engine.parse(template_source)?;
@@ -236,6 +245,169 @@ impl ThemeLoader {
         } else {
             Ok(body)
         }
+    }
+
+    /// Render archive template with pre-computed years data (optimized path)
+    /// This avoids the expensive JS site.posts.each() + date.year() grouping
+    fn render_archive_optimized(
+        &self,
+        template_source: &str,
+        context: &TemplateContext,
+    ) -> Result<String> {
+        // Extract pre-computed data from context
+        let years_data = context.inner().get("__years");
+        let years_reversed = context.inner().get("__yearsReversed");
+
+        // Generate the archive body using pre-computed years data
+        let archive_body =
+            if let (Some(EjsValue::Object(years)), Some(EjsValue::Array(years_order))) =
+                (years_data, years_reversed)
+            {
+                let mut body = String::new();
+
+                // Iterate through years in reverse order
+                for year_val in years_order {
+                    let year_str = year_val.to_output_string();
+                    if let Some(EjsValue::Array(posts)) = years.get(&year_str) {
+                        // Render the _partial/archive for this year
+                        let partial_html =
+                            self.render_archive_year_partial(&year_str, posts, context)?;
+                        body.push_str(&partial_html);
+                    }
+                }
+
+                body
+            } else {
+                // Fallback to JS runtime if pre-computed data is missing
+                return self
+                    .render_with_js_runtime(template_source, context)
+                    .map_err(|e| anyhow!("{}", e));
+            };
+
+        // Now render the archive template wrapper with the pre-rendered body
+        // Replace the complex JS logic with simple output
+        let site_posts_count = if let Some(EjsValue::Object(site)) = context.inner().get("site") {
+            if let Some(EjsValue::Array(posts)) = site.get("posts") {
+                posts.len()
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // Build the simplified archive template output
+        let config_url = if let Some(EjsValue::Object(config)) = context.inner().get("config") {
+            config
+                .get("url")
+                .map(|v| v.to_output_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let page_path = if let Some(EjsValue::Object(page)) = context.inner().get("page") {
+            page.get("current_url")
+                .map(|v| v.to_output_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Generate the archive page HTML directly
+        let html = format!(
+            r#"<div id="article-banner">
+  <h2>Archives</h2>
+  <p class="post-date">文章归档: {} </p>
+</div>
+<main class="app-body" id="archives">
+  <div class="archives-container">
+    {}
+  </div>
+</main>
+
+
+<script>
+  (function() {{
+    var url = '{}/{}';
+    $('#article-banner').geopattern(url);
+    $('.header').removeClass('fixed-header');
+  }})();
+</script>"#,
+            site_posts_count, archive_body, config_url, page_path
+        );
+
+        Ok(html)
+    }
+
+    /// Render a single year's archive partial
+    fn render_archive_year_partial(
+        &self,
+        year: &str,
+        posts: &[EjsValue],
+        context: &TemplateContext,
+    ) -> Result<String> {
+        let root = if let Some(EjsValue::Object(config)) = context.inner().get("config") {
+            config
+                .get("root")
+                .map(|v| v.to_output_string())
+                .unwrap_or_else(|| "/".to_string())
+        } else {
+            "/".to_string()
+        };
+
+        let mut posts_html = String::new();
+        for post in posts {
+            if let EjsValue::Object(post_obj) = post {
+                let title = post_obj
+                    .get("title")
+                    .map(|v| v.to_output_string())
+                    .unwrap_or_default();
+                let path = post_obj
+                    .get("path")
+                    .map(|v| v.to_output_string())
+                    .unwrap_or_default();
+                let date = post_obj
+                    .get("date")
+                    .map(|v| v.to_output_string())
+                    .unwrap_or_default();
+
+                let url = if path.starts_with('/') || path.starts_with("http") {
+                    path
+                } else {
+                    format!(
+                        "{}{}",
+                        root.trim_end_matches('/'),
+                        if path.is_empty() {
+                            "".to_string()
+                        } else {
+                            format!("/{}", path.trim_start_matches('/'))
+                        }
+                    )
+                };
+
+                posts_html.push_str(&format!(
+                    r#"      <div class="section-list-item">
+        <a href="{}" class="archive-title">{}</a>
+        <p class="archive-date">{}</p>
+      </div>
+"#,
+                    url, title, date
+                ));
+            }
+        }
+
+        Ok(format!(
+            r#"<section class="time-section">
+  <h1 class="section-year">
+    {}
+  </h1>
+  <div class="section-list">
+{}  </div>
+</section>
+"#,
+            year, posts_html
+        ))
     }
 
     /// Render a template using the JavaScript runtime

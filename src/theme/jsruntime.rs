@@ -368,6 +368,25 @@ impl JsRuntime {
                 var words = wordcount(content);
                 return Math.ceil(words / wordsPerMinute);
             }}
+            
+            // OPTIMIZATION: If __years and __yearsReversed are provided by Rust,
+            // use them directly instead of computing in template
+            // This skips the expensive site.posts.each() + date.year() grouping
+            var __precomputedYears = __ctx.__years || null;
+            var __precomputedYearsReversed = __ctx.__yearsReversed || null;
+            if (__precomputedYears && __precomputedYearsReversed) {{
+                // Pre-wrap dates in the precomputed years data
+                for (var yearKey in __precomputedYears) {{
+                    var yearPosts = __precomputedYears[yearKey];
+                    if (Array.isArray(yearPosts)) {{
+                        for (var pi = 0; pi < yearPosts.length; pi++) {{
+                            if (yearPosts[pi].date && typeof yearPosts[pi].date === 'string') {{
+                                yearPosts[pi].date = __wrapDate(yearPosts[pi].date);
+                            }}
+                        }}
+                    }}
+                }}
+            }}
             "#,
             context_json, extra_vars
         );

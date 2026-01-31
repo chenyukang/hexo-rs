@@ -324,12 +324,17 @@ impl<'a> Generator<'a> {
         let archive_dir = self.hexo.public_dir.join(&self.hexo.config.archive_dir);
         fs::create_dir_all(&archive_dir)?;
 
-        // Group posts by year
-        let mut years: HashMap<i32, Vec<&Post>> = HashMap::new();
+        // Group posts by year (BTreeMap for sorted order)
+        let mut years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
         for post in posts {
             let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
             years.entry(year).or_default().push(post);
         }
+
+        // Pre-compute years data for archive template (optimization)
+        // This allows archive template to use fast EJS engine instead of QuickJS
+        let years_data = build_years_data(&years);
+        let years_reversed: Vec<i32> = years.keys().rev().cloned().collect();
 
         // Generate yearly archives with filtered site data
         for (year, year_posts) in &years {
@@ -380,6 +385,9 @@ impl<'a> Generator<'a> {
                 ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+                // Pre-computed years data for archive template optimization
+                ctx.set_object("__years", &years_data);
+                ctx.set_object("__yearsReversed", &years_reversed);
                 theme.render_with_layout("archive", &ctx)?
             } else {
                 let posts_vec: Vec<&Post> = year_posts.to_vec();
@@ -407,6 +415,9 @@ impl<'a> Generator<'a> {
             ctx.set_object("theme", theme.config());
             ctx.set_string("path", &path);
             ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+            // Pre-computed years data for archive template optimization
+            ctx.set_object("__years", &years_data);
+            ctx.set_object("__yearsReversed", &years_reversed);
             theme.render_with_layout("archive", &ctx)?
         } else {
             generate_archive_html(&posts.iter().collect::<Vec<_>>(), "Archives")
@@ -533,6 +544,15 @@ impl<'a> Generator<'a> {
                     word_count: site_data.word_count,
                 };
 
+                // Build years data for this tag's posts (for archive template optimization)
+                let mut tag_years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
+                for post in tag_posts {
+                    let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
+                    tag_years.entry(year).or_default().push(post);
+                }
+                let years_data = build_years_data(&tag_years);
+                let years_reversed: Vec<i32> = tag_years.keys().rev().cloned().collect();
+
                 // Use archive template with filtered data
                 let mut ctx = TemplateContext::new();
                 ctx.set_object("config", &self.hexo.config);
@@ -541,6 +561,9 @@ impl<'a> Generator<'a> {
                 ctx.set_object("theme", theme.config());
                 ctx.set_string("path", &path);
                 ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+                // Pre-computed years data for archive template optimization
+                ctx.set_object("__years", &years_data);
+                ctx.set_object("__yearsReversed", &years_reversed);
                 theme.render_with_layout("archive", &ctx)?
             } else {
                 let posts_vec: Vec<&Post> = tag_posts.to_vec();
@@ -934,7 +957,7 @@ fn strip_html(html: &str) -> String {
 }
 
 /// Generate basic HTML without a theme
-fn generate_basic_html(title: &str, content: &str) -> String {
+pub fn generate_basic_html(title: &str, content: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -1043,9 +1066,38 @@ fn generate_archive_html(posts: &[&Post], title: &str) -> String {
     html
 }
 
+/// Build pre-computed years data for archive templates
+/// Returns a HashMap where keys are years and values are arrays of post summaries
+/// Posts within each year are sorted by date in descending order (newest first)
+fn build_years_data(years: &BTreeMap<i32, Vec<&Post>>) -> HashMap<String, Vec<PostSummary>> {
+    years
+        .iter()
+        .map(|(year, posts)| {
+            // Sort posts by date descending (newest first)
+            let mut sorted_posts: Vec<&Post> = posts.clone();
+            sorted_posts.sort_by(|a, b| b.date.cmp(&a.date));
+
+            let post_summaries: Vec<PostSummary> = sorted_posts
+                .iter()
+                .map(|post| PostSummary {
+                    title: post.title.clone(),
+                    date: post.date.format("%Y-%m-%d").to_string(),
+                    path: post.path.clone(),
+                    permalink: post.permalink.clone(),
+                    tags: post.tags.clone(),
+                    categories: post.categories.clone(),
+                    content: post.content.clone(),
+                    word_count: post.content.split_whitespace().count(),
+                })
+                .collect();
+            (year.to_string(), post_summaries)
+        })
+        .collect()
+}
+
 /// Count Chinese characters in a string
 /// This matches the common CJK Unified Ideographs ranges
-fn count_chinese_chars(content: &str) -> usize {
+pub fn count_chinese_chars(content: &str) -> usize {
     content
         .chars()
         .filter(|c| {

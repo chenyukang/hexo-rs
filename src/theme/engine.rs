@@ -1,7 +1,7 @@
 //! Template engine abstraction
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::ejs::{EjsContext, EjsValue};
@@ -185,7 +185,7 @@ pub struct SiteData {
 }
 
 /// Summary of a post for site data
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostSummary {
     pub title: String,
     pub date: String,
