@@ -1,10 +1,11 @@
 //! Generator module - generates static HTML files
 
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use walkdir::WalkDir;
 
+use crate::cache::{ChangeSet, RebuildScope};
 use crate::content::{Page, Post};
 use crate::theme::engine::{PageSummary, PaginationInfo, PostSummary, SiteData, TemplateContext};
 use crate::theme::ThemeLoader;
@@ -91,6 +92,290 @@ impl<'a> Generator<'a> {
         self.generate_sitemap(posts, pages)?;
         tracing::debug!("generate_sitemap took {:?}", start.elapsed());
 
+        Ok(())
+    }
+
+    /// Generate site incrementally based on detected changes
+    pub fn generate_incremental(
+        &self,
+        posts: &[Post],
+        pages: &[Page],
+        changeset: &ChangeSet,
+    ) -> Result<()> {
+        // Create public directory
+        fs::create_dir_all(&self.hexo.public_dir)?;
+
+        // Build site data for templates (needed for all renders)
+        let site_data = self.build_site_data(posts, pages);
+
+        // Convert changed sources to a HashSet for quick lookup
+        let changed_post_sources: HashSet<_> = changeset.changed_posts.iter().collect();
+        let changed_page_sources: HashSet<_> = changeset.changed_pages.iter().collect();
+
+        // Generate only changed posts
+        let mut posts_generated = 0;
+        for post in posts {
+            if changeset.full_rebuild || changed_post_sources.contains(&post.source) {
+                self.generate_post(post, &site_data, posts)?;
+                posts_generated += 1;
+            }
+        }
+        if posts_generated > 0 {
+            tracing::info!("Generated {} posts (incremental)", posts_generated);
+        }
+
+        // Generate only changed pages
+        let mut pages_generated = 0;
+        for page in pages {
+            if changeset.full_rebuild || changed_page_sources.contains(&page.source) {
+                self.generate_page(page, &site_data)?;
+                pages_generated += 1;
+            }
+        }
+        if pages_generated > 0 {
+            tracing::info!("Generated {} pages (incremental)", pages_generated);
+        }
+
+        // Delete output files for deleted posts
+        for source in &changeset.deleted_posts {
+            // Find the cached output path and delete it
+            // For now, we'll let the user run clean if needed
+            tracing::debug!("Post deleted: {}", source);
+        }
+
+        // Generate index pages if needed
+        if changeset.full_rebuild || changeset.rebuild_index {
+            let start = std::time::Instant::now();
+            self.generate_index(posts, &site_data)?;
+            tracing::debug!("generate_index took {:?}", start.elapsed());
+        }
+
+        // Generate archives if needed
+        if changeset.full_rebuild || changeset.rebuild_archives {
+            let start = std::time::Instant::now();
+            self.generate_archives(posts, &site_data)?;
+            tracing::debug!("generate_archives took {:?}", start.elapsed());
+        }
+
+        // Generate category pages based on scope
+        match &changeset.rebuild_categories {
+            RebuildScope::None if !changeset.full_rebuild => {}
+            RebuildScope::Specific(cats) if !changeset.full_rebuild => {
+                let start = std::time::Instant::now();
+                self.generate_categories_partial(posts, &site_data, cats)?;
+                tracing::debug!("generate_categories_partial took {:?}", start.elapsed());
+            }
+            _ => {
+                let start = std::time::Instant::now();
+                self.generate_categories(posts, &site_data)?;
+                tracing::debug!("generate_categories took {:?}", start.elapsed());
+            }
+        }
+
+        // Generate tag pages based on scope
+        match &changeset.rebuild_tags {
+            RebuildScope::None if !changeset.full_rebuild => {}
+            RebuildScope::Specific(tags) if !changeset.full_rebuild => {
+                let start = std::time::Instant::now();
+                self.generate_tags_partial(posts, &site_data, tags)?;
+                tracing::debug!("generate_tags_partial took {:?}", start.elapsed());
+            }
+            _ => {
+                let start = std::time::Instant::now();
+                self.generate_tags(posts, &site_data)?;
+                tracing::debug!("generate_tags took {:?}", start.elapsed());
+            }
+        }
+
+        // Always copy assets (they're usually quick and may have changed)
+        let start = std::time::Instant::now();
+        self.copy_source_assets()?;
+        tracing::debug!("copy_source_assets took {:?}", start.elapsed());
+
+        // Copy theme assets
+        let start = std::time::Instant::now();
+        if let Some(theme) = &self.theme {
+            theme.copy_source(&self.hexo.public_dir)?;
+        }
+        tracing::debug!("theme.copy_source took {:?}", start.elapsed());
+
+        // Regenerate feed and sitemap if any posts changed
+        if changeset.full_rebuild
+            || !changeset.changed_posts.is_empty()
+            || !changeset.deleted_posts.is_empty()
+        {
+            let start = std::time::Instant::now();
+            self.generate_atom_feed(posts)?;
+            tracing::debug!("generate_atom_feed took {:?}", start.elapsed());
+
+            let start = std::time::Instant::now();
+            self.generate_sitemap(posts, pages)?;
+            tracing::debug!("generate_sitemap took {:?}", start.elapsed());
+        }
+
+        Ok(())
+    }
+
+    /// Generate only specific category pages
+    fn generate_categories_partial(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        categories_to_rebuild: &[String],
+    ) -> Result<()> {
+        let categories_set: HashSet<_> = categories_to_rebuild.iter().collect();
+
+        // Use BTreeMap for deterministic iteration order
+        let mut categories: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
+
+        for post in posts {
+            for cat in &post.categories {
+                if categories_set.contains(cat) {
+                    categories.entry(cat.clone()).or_default().push(post);
+                }
+            }
+        }
+
+        let cat_dir = self.hexo.public_dir.join(&self.hexo.config.category_dir);
+
+        for (category, cat_posts) in &categories {
+            let slug = slug::slugify(category);
+            let output_dir = cat_dir.join(&slug);
+            fs::create_dir_all(&output_dir)?;
+
+            let current_url = format!(
+                "{}{}/{}/",
+                self.hexo.config.root, self.hexo.config.category_dir, slug
+            );
+            let path = format!("{}/{}/", self.hexo.config.category_dir, slug);
+            let page_info = PaginationInfo {
+                is_category: true,
+                category: Some(category.clone()),
+                current_url: current_url.clone(),
+                ..Default::default()
+            };
+
+            let html = if let Some(theme) = &self.theme {
+                let mut ctx = TemplateContext::new();
+                ctx.set_object("config", &self.hexo.config);
+                ctx.set_object("site", site_data);
+                ctx.set_object("page", &page_info);
+                ctx.set_object("page.posts", cat_posts);
+                ctx.set_object("theme", theme.config());
+                ctx.set_string("path", &path);
+                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+
+                let template = theme
+                    .find_template("category", &["archive", "index"])
+                    .unwrap_or_else(|| "index".to_string());
+
+                theme.render_with_layout(&template, &ctx)?
+            } else {
+                let posts_vec: Vec<&Post> = cat_posts.to_vec();
+                generate_archive_html(&posts_vec, &format!("Category: {}", category))
+            };
+
+            fs::write(output_dir.join("index.html"), html)?;
+        }
+
+        tracing::info!(
+            "Regenerated {} category pages (incremental)",
+            categories.len()
+        );
+        Ok(())
+    }
+
+    /// Generate only specific tag pages
+    fn generate_tags_partial(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        tags_to_rebuild: &[String],
+    ) -> Result<()> {
+        let tags_set: HashSet<_> = tags_to_rebuild.iter().collect();
+
+        // Use BTreeMap for deterministic iteration order
+        let mut tags: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
+
+        for post in posts {
+            for tag in &post.tags {
+                if tags_set.contains(tag) {
+                    tags.entry(tag.clone()).or_default().push(post);
+                }
+            }
+        }
+
+        let tag_dir = self.hexo.public_dir.join(&self.hexo.config.tag_dir);
+
+        for (tag, tag_posts) in &tags {
+            let slug = slug::slugify(tag);
+            let output_dir = tag_dir.join(&slug);
+            fs::create_dir_all(&output_dir)?;
+
+            let current_url = format!(
+                "{}{}/{}/",
+                self.hexo.config.root, self.hexo.config.tag_dir, slug
+            );
+            let path = format!("{}/{}/", self.hexo.config.tag_dir, slug);
+            let page_info = PaginationInfo {
+                is_tag: true,
+                tag: Some(tag.clone()),
+                current_url: current_url.clone(),
+                ..Default::default()
+            };
+
+            let html = if let Some(theme) = &self.theme {
+                // Build filtered site data with only this tag's posts
+                let filtered_posts: Vec<PostSummary> = tag_posts
+                    .iter()
+                    .map(|post| PostSummary {
+                        title: post.title.clone(),
+                        date: post.date.format("%Y-%m-%d").to_string(),
+                        path: post.path.clone(),
+                        permalink: post.permalink.clone(),
+                        tags: post.tags.clone(),
+                        categories: post.categories.clone(),
+                        content: post.content.clone(),
+                        word_count: post.content.split_whitespace().count(),
+                    })
+                    .collect();
+
+                let filtered_site = SiteData {
+                    posts: filtered_posts,
+                    pages: site_data.pages.clone(),
+                    tags: site_data.tags.clone(),
+                    categories: site_data.categories.clone(),
+                    word_count: site_data.word_count,
+                };
+
+                // Build years data for this tag's posts
+                let mut tag_years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
+                for post in tag_posts {
+                    let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
+                    tag_years.entry(year).or_default().push(post);
+                }
+                let years_data = build_years_data(&tag_years);
+                let years_reversed: Vec<i32> = tag_years.keys().rev().cloned().collect();
+
+                let mut ctx = TemplateContext::new();
+                ctx.set_object("config", &self.hexo.config);
+                ctx.set_object("site", &filtered_site);
+                ctx.set_object("page", &page_info);
+                ctx.set_object("theme", theme.config());
+                ctx.set_string("path", &path);
+                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+                ctx.set_object("__years", &years_data);
+                ctx.set_object("__yearsReversed", &years_reversed);
+                theme.render_with_layout("archive", &ctx)?
+            } else {
+                let posts_vec: Vec<&Post> = tag_posts.to_vec();
+                generate_archive_html(&posts_vec, &format!("Tag: {}", tag))
+            };
+
+            fs::write(output_dir.join("index.html"), html)?;
+        }
+
+        tracing::info!("Regenerated {} tag pages (incremental)", tags.len());
         Ok(())
     }
 

@@ -148,10 +148,12 @@ async fn main() -> Result<()> {
             tracing::info!("Generating static files...");
 
             if force {
+                // Clear cache and public dir for force rebuild
+                hexo_rs::commands::generate::clear_cache(&hexo)?;
                 hexo.clean()?;
             }
 
-            hexo.generate()?;
+            hexo_rs::commands::generate::run_with_options(&hexo, force)?;
             println!("Generated successfully!");
 
             if watch {
