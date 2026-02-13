@@ -282,14 +282,11 @@ impl Generator {
         context.insert("site", site_data);
         context.insert("config", config_data);
         context.insert("theme", theme_data);
-        context.insert(
-            "current_year",
-            &chrono::Local::now().format("%Y").to_string(),
-        );
-        context.insert(
-            "now_formatted",
-            &format_datetime_chinese(&chrono::Local::now()),
-        );
+        // Always use Beijing time (UTC+8) for "最近更新"
+        let beijing_now =
+            chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+        context.insert("current_year", &beijing_now.format("%Y").to_string());
+        context.insert("now_formatted", &format_datetime_chinese(&beijing_now));
         context
     }
 
@@ -861,7 +858,10 @@ use chrono::Datelike;
 use chrono::Timelike;
 
 /// Format datetime with Chinese AM/PM (e.g., "2026-01-31, 上午 11:02")
-fn format_datetime_chinese(dt: &chrono::DateTime<chrono::Local>) -> String {
+fn format_datetime_chinese<Tz: chrono::TimeZone>(dt: &chrono::DateTime<Tz>) -> String
+where
+    <Tz as chrono::TimeZone>::Offset: std::fmt::Display,
+{
     let hour = dt.hour();
     let (period, hour_12) = if hour < 12 {
         ("上午", if hour == 0 { 12 } else { hour })

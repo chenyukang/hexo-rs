@@ -8,7 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser)]
 #[command(name = "hexo-rs")]
 #[command(author = "Yukang Chen")]
-#[command(version = "0.1.0")]
+#[command(version = "0.3.0")]
 #[command(about = "A fast static site generator compatible with Hexo themes", long_about = None)]
 struct Cli {
     /// Set the base directory (defaults to current directory)
