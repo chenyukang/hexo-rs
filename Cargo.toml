@@ -33,7 +33,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # HTTP Server
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
-tokio-stream = "0.1"
 
 # File watching
 notify = "6"
@@ -42,8 +41,6 @@ notify-debouncer-mini = "0.4"
 # File system
 walkdir = "2"
 
-# Regex
-regex = "1"
 indexmap = { version = "2", features = ["serde"] }
 
 # Error handling
@@ -55,7 +52,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Utilities
 slug = "0.1"
-percent-encoding = "2"
 
 # Template engine
 tera = "1"
