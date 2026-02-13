@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% block body %}
+<main class="app-body" style="max-width: 760px">
+    {% for post in page_posts %}
+    <article class="article-card">
+      <h2 class="article-head" font-color="red">
+        <a href="{{ post.path }}">{{ post.title }}</a>
+      </h2>
+      <p class="article-date">{{ post.date | date_format(format="LL") }}
+          {% if post.tags | length > 0 %}
+              {% set page_tags = post.tags %}
+              {% include "partials/tag.html" %}
+          {% endif %}
+      </p>
+      <div class="article-summary">
+        {% if post.excerpt %}
+          {{ post.excerpt | safe }}
+        {% elif loop.first and is_first_page %}
+            {{ post.content | safe }}
+        {% else %}
+            {{ post.content | strip_html | truncate_chars(length=150, omission=" .....") }}
+        {% endif %}
+      </div>
+      {% if loop.first and is_first_page %}
+          <a class="more" href="{{ post.path }}#footer">发表评论</a>
+      {% else %}
+          <a class="more" href="{{ post.path }}">{{ theme.excerpt_link }}</a>
+      {% endif %}
+    </article>
+    {% endfor %}
+
+  {% if pagination.total > 1 %}
+    {% include "partials/pager.html" %}
+  {% endif %}
+</main>
+{% endblock body %}

@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% block body %}
+<div id="article-banner">
+  <h2>Tags</h2>
+  <p class="post-date">Total: {{ all_tags | length }}</p>
+</div>
+<main class="app-body">
+  <div id="tag-cloud">
+    {% for tag in all_tags %}
+    <a class="tag{{ loop.index0 % 4 }}" data-name="tag-{{ tag.name }}">{{ tag.name }}</a>
+    {% endfor %}
+  </div>
+  {% for tag in all_tags %}
+  <div class="tag-list">
+    <h3 class="tag-name" id="tag-{{ tag.name }}">{{ tag.name }}</h3>
+    {% for post in tag.posts %}
+    <ul class="tag-preview">
+      <li>
+        <a href="{{ post.path }}">{{ post.title }}</a>
+      </li>
+    </ul>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</main>
+
+<script>
+  (function() {
+    var header = $('.header');
+    var url = '{{ config.url }}/{{ current_path }}'
+
+    $('#article-banner').geopattern(url)
+    $('.header').removeClass('fixed-header')
+
+    var tag = decodeURIComponent(location.hash.replace('#', ''))
+    if (tag) {
+      var tagId = "#tag-" + tag;
+      $("html, body").animate({
+        scrollTop: $(tagId).offset().top - header.height()
+      }, 400)
+    }
+  })();
+</script>
+{% endblock body %}

@@ -1,0 +1,54 @@
+<header class="header fixed-header">
+  <div class="header-container">
+    <a class="home-link" href="/">
+      <div class="logo"></div>
+      <span>{{ config.title }}</span>
+    </a>
+    <ul class="right-list">
+      {% for item in theme.menu %}
+        <li class="list-item">
+          {% if current_path is defined and (item.path == "/" ~ current_path | replace(from="/index.html", to="") or (item.path == "/" and is_home is defined and is_home)) %}
+            <a href="{{ item.path }}" class="item-link active">{{ item.name }}</a>
+          {% else %}
+            <a href="{{ item.path }}" class="item-link">{{ item.name }}</a>
+          {% endif %}
+        </li>
+      {% endfor %}
+
+        <li class="list-item" style="margin: 0">
+       <a class="icon-small" href="/search">
+        <span class="fa-stack fa-lg">
+          <i class="fa fa-search fa-stack-1x fa-inverse" style="color:#8ccb8c"></i>
+        </span>
+       </a>
+      </li>
+
+       <li class="list-item" style="margin-left: 3px">
+        <a class="icon-small" href="/atom.xml">
+         <span class="fa-stack fa-lg">
+           <i class="fa fa-rss fa-inverse" style="color:orange"></i>
+         </span>
+        </a>
+       </li>
+    </ul>
+    
+    <div class="menu">
+      <span class="icon-bar"></span>
+      <span class="icon-bar"></span>
+      <span class="icon-bar"></span>
+    </div>
+    <div class="menu-mask">
+      <ul class="menu-list">
+        {% for item in theme.menu %}
+          <li class="menu-item">
+            {% if current_path is defined and (item.path == "/" ~ current_path | replace(from="/index.html", to="") or (item.path == "/" and is_home is defined and is_home)) %}
+              <a href="{{ item.path }}" class="menu-link mobile-active">{{ item.name }}</a>
+            {% else %}
+              <a href="{{ item.path }}" class="menu-link">{{ item.name }}</a>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</header>

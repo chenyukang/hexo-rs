@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block body %}
+<div id="article-banner">
+  <h2>Archives</h2>
+  <p class="post-date">文章归档: {{ site.posts | length }} </p>
+</div>
+<main class="app-body" id="archives">
+  <div class="archives-container">
+    {% for year_data in archive_years %}
+    <section class="time-section">
+      <h1 class="section-year">
+        {{ year_data.year }}
+      </h1>
+      <div class="section-list">
+        {% for post in year_data.posts %}
+          <div class="section-list-item">
+            <a href="{{ post.path }}" class="archive-title">{{ post.title }}</a>
+            <p class="archive-date">{{ post.date }}</p>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+</main>
+
+
+<script>
+  (function() {
+    var url = '{{ config.url }}/{{ current_path }}';
+    $('#article-banner').geopattern(url);
+    $('.header').removeClass('fixed-header');
+  })();
+</script>
+{% endblock body %}

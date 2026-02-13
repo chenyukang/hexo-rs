@@ -1,0 +1,25 @@
+{% if prev_post is defined or next_post is defined %}
+  <div class="nav-container">
+    <!-- reverse left and right to put prev and next in a more logic postition -->
+    {% if prev_post is defined %}
+      <a class="nav-left" href="{{ prev_post.path }}">
+        <span class="nav-arrow">← </span>
+        {% if prev_post.title %}
+          {{ prev_post.title | truncate(length=25) }}
+        {% else %}
+          (untitled)
+        {% endif %}
+      </a>
+    {% endif %}
+    {% if next_post is defined %}
+      <a class="nav-right" href="{{ next_post.path }}">
+        {% if next_post.title %}
+          {{ next_post.title | truncate(length=26) }}
+        {% else %}
+          (untitled)
+        {% endif %}
+        <span class="nav-arrow"> →</span>
+      </a>
+    {% endif %}
+  </div>
+{% endif %}

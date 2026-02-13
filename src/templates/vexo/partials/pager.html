@@ -1,0 +1,13 @@
+<div class="guide-pager">
+  {% if pagination.prev > 0 %}
+    <a href="{{ pagination.prev_link }}"><span class="page-arrow">← </span>Prev</a>
+  {% else %}
+    <a class="unvisible" href="#"><span class="page-arrow">←</span> Prev</a>
+  {% endif %}
+    <a><span class="page-arrow"> {{ pagination.prev + 1 }} / {{ pagination.total }} </span></a>
+  {% if pagination.next > 0 %}
+    <a href="{{ pagination.next_link }}">Next<span class="page-arrow"> →</span></a>
+  {% else %}
+    <a class="unvisible" href="#">Next <span class="page-arrow">→</span></a>
+  {% endif %}
+</div>

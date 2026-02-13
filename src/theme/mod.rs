@@ -1,11 +1,8 @@
-//! Theme module - handles theme loading and template rendering
+//! Theme module - handles theme loading
+//!
+//! Note: EJS/QuickJS has been removed. We now use Tera templates
+//! with the vexo theme embedded directly in the binary.
 
-pub mod ejs;
-pub mod engine;
-pub mod jsruntime;
 mod loader;
 
-pub use ejs::{EjsContext, EjsEngine, EjsError, EjsValue};
-pub use engine::{TemplateContext, TemplateEngine};
-pub use jsruntime::JsRuntime;
 pub use loader::ThemeLoader;

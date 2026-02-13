@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+{% block body %}
+<div id="article-banner">
+  <h2>Tag: {{ tag_name }}</h2>
+  <p class="post-date">{{ tag_posts | length }} posts</p>
+</div>
+<main class="app-body">
+  <div class="tag-list">
+    {% for post in tag_posts %}
+    <ul class="tag-preview">
+      <li>
+        <span class="post-date">{{ post.date }}</span>
+        <a href="{{ post.path }}">{{ post.title }}</a>
+      </li>
+    </ul>
+    {% endfor %}
+  </div>
+</main>
+
+<script>
+  (function() {
+    var url = '{{ config.url }}/tags/{{ tag_name }}'
+    $('#article-banner').geopattern(url)
+    $('.header').removeClass('fixed-header')
+  })();
+</script>
+{% endblock body %}

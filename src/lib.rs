@@ -1,16 +1,15 @@
-//! hexo-rs: A fast static site generator compatible with Hexo themes
+//! hexo-rs: A fast static site generator with built-in vexo theme
 //!
 //! This crate provides a Rust implementation of a static site generator
-//! that is fully compatible with Hexo themes, particularly those using EJS templates.
+//! that uses Tera templates with an embedded vexo theme for rendering.
 
-pub mod cache;
 pub mod commands;
 pub mod config;
 pub mod content;
 pub mod generator;
 pub mod helpers;
-pub mod i18n;
 pub mod server;
+pub mod templates;
 pub mod theme;
 
 use anyhow::Result;
@@ -61,14 +60,9 @@ impl Hexo {
         commands::init::run(self)
     }
 
-    /// Generate the static site (with incremental support)
+    /// Generate the static site
     pub fn generate(&self) -> Result<()> {
         commands::generate::run(self)
-    }
-
-    /// Generate the static site with options
-    pub fn generate_with_options(&self, force: bool) -> Result<()> {
-        commands::generate::run_with_options(self, force)
     }
 
     /// Clean the public directory

@@ -1,381 +1,86 @@
-//! Generator module - generates static HTML files
+//! Generator module - generates static HTML files using built-in Tera templates
 
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
+
+use tera::Context;
 use walkdir::WalkDir;
 
-use crate::cache::{ChangeSet, RebuildScope};
 use crate::content::{Page, Post};
-use crate::theme::engine::{PageSummary, PaginationInfo, PostSummary, SiteData, TemplateContext};
+use crate::helpers::toc;
+use crate::templates::{
+    AboutData, ArchiveYearData, ConfigData, MenuItem, NavPost, PaginationData, PostData, SiteData,
+    TagData, TemplateRenderer, ThemeData,
+};
 use crate::theme::ThemeLoader;
 use crate::Hexo;
 
-/// Static site generator
-pub struct Generator<'a> {
-    hexo: &'a Hexo,
-    theme: Option<ThemeLoader>,
+/// Static site generator using Tera templates
+pub struct Generator {
+    hexo: Hexo,
+    renderer: TemplateRenderer,
+    theme_loader: ThemeLoader,
 }
 
-impl<'a> Generator<'a> {
+impl Generator {
     /// Create a new generator
-    pub fn new(hexo: &'a Hexo) -> Result<Self> {
-        let theme = if hexo.theme_dir.exists() {
-            Some(ThemeLoader::load(&hexo.theme_dir)?)
-        } else {
-            tracing::warn!("Theme directory not found: {:?}", hexo.theme_dir);
-            None
-        };
+    pub fn new(hexo: &Hexo) -> Result<Self> {
+        let renderer = TemplateRenderer::new()?;
+        let theme_loader = ThemeLoader::load(&hexo.theme_dir)?;
 
-        Ok(Self { hexo, theme })
+        Ok(Self {
+            hexo: hexo.clone(),
+            renderer,
+            theme_loader,
+        })
     }
 
-    /// Generate the complete site
+    /// Generate the entire site
     pub fn generate(&self, posts: &[Post], pages: &[Page]) -> Result<()> {
-        // Create public directory
+        // Ensure public directory exists
         fs::create_dir_all(&self.hexo.public_dir)?;
 
-        // Build site data for templates
-        let site_data = self.build_site_data(posts, pages);
+        // Copy theme assets
+        self.theme_loader.copy_source(&self.hexo.public_dir)?;
 
-        // Generate posts
-        for post in posts {
-            self.generate_post(post, &site_data, posts)?;
-        }
-        tracing::info!("Generated {} posts", posts.len());
+        // Copy source assets (images, etc.)
+        self.copy_source_assets()?;
 
-        // Generate pages
-        for page in pages {
-            self.generate_page(page, &site_data)?;
-        }
-        tracing::info!("Generated {} pages", pages.len());
+        // Sort posts by date (newest first)
+        let mut sorted_posts: Vec<_> = posts.to_vec();
+        sorted_posts.sort_by(|a, b| b.date.cmp(&a.date));
 
-        // Generate index pages
-        let start = std::time::Instant::now();
-        self.generate_index(posts, &site_data)?;
-        tracing::debug!("generate_index took {:?}", start.elapsed());
+        // Build site data
+        let site_data = self.build_site_data(&sorted_posts, pages);
 
-        // Generate archives
-        let start = std::time::Instant::now();
-        self.generate_archives(posts, &site_data)?;
-        tracing::debug!("generate_archives took {:?}", start.elapsed());
+        // Build config data
+        let config_data = self.build_config_data();
 
-        // Generate category pages
-        let start = std::time::Instant::now();
-        self.generate_categories(posts, &site_data)?;
-        tracing::debug!("generate_categories took {:?}", start.elapsed());
+        // Build theme data
+        let theme_data = self.build_theme_data();
+
+        // Generate index pages (with pagination)
+        self.generate_index_pages(&sorted_posts, &site_data, &config_data, &theme_data)?;
+
+        // Generate post pages
+        self.generate_post_pages(&sorted_posts, &site_data, &config_data, &theme_data)?;
+
+        // Generate standalone pages
+        self.generate_page_pages(pages, &site_data, &config_data, &theme_data)?;
+
+        // Generate archive page
+        self.generate_archive_page(&sorted_posts, &site_data, &config_data, &theme_data)?;
 
         // Generate tag pages
-        let start = std::time::Instant::now();
-        self.generate_tags(posts, &site_data)?;
-        tracing::debug!("generate_tags took {:?}", start.elapsed());
+        self.generate_tag_pages(&sorted_posts, &site_data, &config_data, &theme_data)?;
 
-        // Copy static assets from source
-        let start = std::time::Instant::now();
-        self.copy_source_assets()?;
-        tracing::debug!("copy_source_assets took {:?}", start.elapsed());
+        // Generate RSS feed
+        self.generate_atom_feed(&sorted_posts)?;
 
-        // Copy theme assets
-        let start = std::time::Instant::now();
-        if let Some(theme) = &self.theme {
-            theme.copy_source(&self.hexo.public_dir)?;
-        }
-        tracing::debug!("theme.copy_source took {:?}", start.elapsed());
+        // Generate search index
+        self.generate_search_index(&sorted_posts)?;
 
-        // Generate Atom feed
-        let start = std::time::Instant::now();
-        self.generate_atom_feed(posts)?;
-        tracing::debug!("generate_atom_feed took {:?}", start.elapsed());
-
-        // Generate sitemap
-        let start = std::time::Instant::now();
-        self.generate_sitemap(posts, pages)?;
-        tracing::debug!("generate_sitemap took {:?}", start.elapsed());
-
-        Ok(())
-    }
-
-    /// Generate site incrementally based on detected changes
-    pub fn generate_incremental(
-        &self,
-        posts: &[Post],
-        pages: &[Page],
-        changeset: &ChangeSet,
-    ) -> Result<()> {
-        // Create public directory
-        fs::create_dir_all(&self.hexo.public_dir)?;
-
-        // Build site data for templates (needed for all renders)
-        let site_data = self.build_site_data(posts, pages);
-
-        // Convert changed sources to a HashSet for quick lookup
-        let changed_post_sources: HashSet<_> = changeset.changed_posts.iter().collect();
-        let changed_page_sources: HashSet<_> = changeset.changed_pages.iter().collect();
-
-        // Generate only changed posts
-        let mut posts_generated = 0;
-        for post in posts {
-            if changeset.full_rebuild || changed_post_sources.contains(&post.source) {
-                self.generate_post(post, &site_data, posts)?;
-                posts_generated += 1;
-            }
-        }
-        if posts_generated > 0 {
-            tracing::info!("Generated {} posts (incremental)", posts_generated);
-        }
-
-        // Generate only changed pages
-        let mut pages_generated = 0;
-        for page in pages {
-            if changeset.full_rebuild || changed_page_sources.contains(&page.source) {
-                self.generate_page(page, &site_data)?;
-                pages_generated += 1;
-            }
-        }
-        if pages_generated > 0 {
-            tracing::info!("Generated {} pages (incremental)", pages_generated);
-        }
-
-        // Delete output files for deleted posts
-        for source in &changeset.deleted_posts {
-            // Find the cached output path and delete it
-            // For now, we'll let the user run clean if needed
-            tracing::debug!("Post deleted: {}", source);
-        }
-
-        // Generate index pages if needed
-        if changeset.full_rebuild || changeset.rebuild_index {
-            let start = std::time::Instant::now();
-            self.generate_index(posts, &site_data)?;
-            tracing::debug!("generate_index took {:?}", start.elapsed());
-        }
-
-        // Generate archives if needed
-        if changeset.full_rebuild || changeset.rebuild_archives {
-            let start = std::time::Instant::now();
-            self.generate_archives(posts, &site_data)?;
-            tracing::debug!("generate_archives took {:?}", start.elapsed());
-        }
-
-        // Generate category pages based on scope
-        match &changeset.rebuild_categories {
-            RebuildScope::None if !changeset.full_rebuild => {}
-            RebuildScope::Specific(cats) if !changeset.full_rebuild => {
-                let start = std::time::Instant::now();
-                self.generate_categories_partial(posts, &site_data, cats)?;
-                tracing::debug!("generate_categories_partial took {:?}", start.elapsed());
-            }
-            _ => {
-                let start = std::time::Instant::now();
-                self.generate_categories(posts, &site_data)?;
-                tracing::debug!("generate_categories took {:?}", start.elapsed());
-            }
-        }
-
-        // Generate tag pages based on scope
-        match &changeset.rebuild_tags {
-            RebuildScope::None if !changeset.full_rebuild => {}
-            RebuildScope::Specific(tags) if !changeset.full_rebuild => {
-                let start = std::time::Instant::now();
-                self.generate_tags_partial(posts, &site_data, tags)?;
-                tracing::debug!("generate_tags_partial took {:?}", start.elapsed());
-            }
-            _ => {
-                let start = std::time::Instant::now();
-                self.generate_tags(posts, &site_data)?;
-                tracing::debug!("generate_tags took {:?}", start.elapsed());
-            }
-        }
-
-        // Always copy assets (they're usually quick and may have changed)
-        let start = std::time::Instant::now();
-        self.copy_source_assets()?;
-        tracing::debug!("copy_source_assets took {:?}", start.elapsed());
-
-        // Copy theme assets
-        let start = std::time::Instant::now();
-        if let Some(theme) = &self.theme {
-            theme.copy_source(&self.hexo.public_dir)?;
-        }
-        tracing::debug!("theme.copy_source took {:?}", start.elapsed());
-
-        // Regenerate feed and sitemap if any posts changed
-        if changeset.full_rebuild
-            || !changeset.changed_posts.is_empty()
-            || !changeset.deleted_posts.is_empty()
-        {
-            let start = std::time::Instant::now();
-            self.generate_atom_feed(posts)?;
-            tracing::debug!("generate_atom_feed took {:?}", start.elapsed());
-
-            let start = std::time::Instant::now();
-            self.generate_sitemap(posts, pages)?;
-            tracing::debug!("generate_sitemap took {:?}", start.elapsed());
-        }
-
-        Ok(())
-    }
-
-    /// Generate only specific category pages
-    fn generate_categories_partial(
-        &self,
-        posts: &[Post],
-        site_data: &SiteData,
-        categories_to_rebuild: &[String],
-    ) -> Result<()> {
-        let categories_set: HashSet<_> = categories_to_rebuild.iter().collect();
-
-        // Use BTreeMap for deterministic iteration order
-        let mut categories: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
-
-        for post in posts {
-            for cat in &post.categories {
-                if categories_set.contains(cat) {
-                    categories.entry(cat.clone()).or_default().push(post);
-                }
-            }
-        }
-
-        let cat_dir = self.hexo.public_dir.join(&self.hexo.config.category_dir);
-
-        for (category, cat_posts) in &categories {
-            let slug = slug::slugify(category);
-            let output_dir = cat_dir.join(&slug);
-            fs::create_dir_all(&output_dir)?;
-
-            let current_url = format!(
-                "{}{}/{}/",
-                self.hexo.config.root, self.hexo.config.category_dir, slug
-            );
-            let path = format!("{}/{}/", self.hexo.config.category_dir, slug);
-            let page_info = PaginationInfo {
-                is_category: true,
-                category: Some(category.clone()),
-                current_url: current_url.clone(),
-                ..Default::default()
-            };
-
-            let html = if let Some(theme) = &self.theme {
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", site_data);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("page.posts", cat_posts);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-
-                let template = theme
-                    .find_template("category", &["archive", "index"])
-                    .unwrap_or_else(|| "index".to_string());
-
-                theme.render_with_layout(&template, &ctx)?
-            } else {
-                let posts_vec: Vec<&Post> = cat_posts.to_vec();
-                generate_archive_html(&posts_vec, &format!("Category: {}", category))
-            };
-
-            fs::write(output_dir.join("index.html"), html)?;
-        }
-
-        tracing::info!(
-            "Regenerated {} category pages (incremental)",
-            categories.len()
-        );
-        Ok(())
-    }
-
-    /// Generate only specific tag pages
-    fn generate_tags_partial(
-        &self,
-        posts: &[Post],
-        site_data: &SiteData,
-        tags_to_rebuild: &[String],
-    ) -> Result<()> {
-        let tags_set: HashSet<_> = tags_to_rebuild.iter().collect();
-
-        // Use BTreeMap for deterministic iteration order
-        let mut tags: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
-
-        for post in posts {
-            for tag in &post.tags {
-                if tags_set.contains(tag) {
-                    tags.entry(tag.clone()).or_default().push(post);
-                }
-            }
-        }
-
-        let tag_dir = self.hexo.public_dir.join(&self.hexo.config.tag_dir);
-
-        for (tag, tag_posts) in &tags {
-            let slug = slug::slugify(tag);
-            let output_dir = tag_dir.join(&slug);
-            fs::create_dir_all(&output_dir)?;
-
-            let current_url = format!(
-                "{}{}/{}/",
-                self.hexo.config.root, self.hexo.config.tag_dir, slug
-            );
-            let path = format!("{}/{}/", self.hexo.config.tag_dir, slug);
-            let page_info = PaginationInfo {
-                is_tag: true,
-                tag: Some(tag.clone()),
-                current_url: current_url.clone(),
-                ..Default::default()
-            };
-
-            let html = if let Some(theme) = &self.theme {
-                // Build filtered site data with only this tag's posts
-                let filtered_posts: Vec<PostSummary> = tag_posts
-                    .iter()
-                    .map(|post| PostSummary {
-                        title: post.title.clone(),
-                        date: post.date.format("%Y-%m-%d").to_string(),
-                        path: post.path.clone(),
-                        permalink: post.permalink.clone(),
-                        tags: post.tags.clone(),
-                        categories: post.categories.clone(),
-                        content: post.content.clone(),
-                        word_count: post.content.split_whitespace().count(),
-                    })
-                    .collect();
-
-                let filtered_site = SiteData {
-                    posts: filtered_posts,
-                    pages: site_data.pages.clone(),
-                    tags: site_data.tags.clone(),
-                    categories: site_data.categories.clone(),
-                    word_count: site_data.word_count,
-                };
-
-                // Build years data for this tag's posts
-                let mut tag_years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
-                for post in tag_posts {
-                    let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
-                    tag_years.entry(year).or_default().push(post);
-                }
-                let years_data = build_years_data(&tag_years);
-                let years_reversed: Vec<i32> = tag_years.keys().rev().cloned().collect();
-
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", &filtered_site);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-                ctx.set_object("__years", &years_data);
-                ctx.set_object("__yearsReversed", &years_reversed);
-                theme.render_with_layout("archive", &ctx)?
-            } else {
-                let posts_vec: Vec<&Post> = tag_posts.to_vec();
-                generate_archive_html(&posts_vec, &format!("Tag: {}", tag))
-            };
-
-            fs::write(output_dir.join("index.html"), html)?;
-        }
-
-        tracing::info!("Regenerated {} tag pages (incremental)", tags.len());
         Ok(())
     }
 
@@ -383,177 +88,255 @@ impl<'a> Generator<'a> {
     fn build_site_data(&self, posts: &[Post], pages: &[Page]) -> SiteData {
         let mut tags: HashMap<String, usize> = HashMap::new();
         let mut categories: HashMap<String, usize> = HashMap::new();
+        let mut total_word_count = 0;
 
-        for post in posts {
-            for tag in &post.tags {
-                *tags.entry(tag.clone()).or_insert(0) += 1;
-            }
-            for cat in &post.categories {
-                *categories.entry(cat.clone()).or_insert(0) += 1;
-            }
-        }
-
-        // Calculate word counts
-        let post_summaries: Vec<PostSummary> = posts
+        let post_data: Vec<PostData> = posts
             .iter()
             .map(|p| {
-                let word_count = count_chinese_chars(&p.content);
-                PostSummary {
+                for tag in &p.tags {
+                    *tags.entry(tag.clone()).or_insert(0) += 1;
+                }
+                for cat in &p.categories {
+                    *categories.entry(cat.clone()).or_insert(0) += 1;
+                }
+
+                let word_count = count_words(&p.content);
+                total_word_count += word_count;
+
+                PostData {
                     title: p.title.clone(),
                     date: p.date.format("%Y-%m-%d").to_string(),
-                    path: p.path.clone(),
+                    path: format!("/{}", p.path.trim_start_matches('/')),
                     permalink: p.permalink.clone(),
                     tags: p.tags.clone(),
                     categories: p.categories.clone(),
                     content: p.content.clone(),
+                    excerpt: p.excerpt.clone(),
                     word_count,
                 }
             })
             .collect();
 
-        let total_word_count: usize = post_summaries.iter().map(|p| p.word_count).sum();
+        let page_data = pages
+            .iter()
+            .map(|p| crate::templates::PageData {
+                title: p.title.clone(),
+                date: p.date.format("%Y-%m-%d").to_string(),
+                path: format!("/{}", p.path.trim_start_matches('/')),
+                permalink: p.permalink.clone(),
+                content: p.content.clone(),
+                layout: p.layout.clone(),
+            })
+            .collect();
 
         SiteData {
-            posts: post_summaries,
-            pages: pages
-                .iter()
-                .map(|p| PageSummary {
-                    title: p.title.clone(),
-                    path: p.path.clone(),
-                    permalink: p.permalink.clone(),
-                })
-                .collect(),
+            posts: post_data,
+            pages: page_data,
             tags,
             categories,
             word_count: total_word_count,
         }
     }
 
-    /// Generate a single post
-    fn generate_post(&self, post: &Post, site_data: &SiteData, all_posts: &[Post]) -> Result<()> {
-        let output_path = self.hexo.public_dir.join(post.path.trim_start_matches('/'));
-        let output_file = output_path.join("index.html");
-
-        fs::create_dir_all(&output_path)?;
-
-        let html = if let Some(theme) = &self.theme {
-            let mut ctx = TemplateContext::new();
-            ctx.set_object("config", &self.hexo.config);
-            ctx.set_object("site", site_data);
-            ctx.set_object("page", post);
-            ctx.set_object("theme", theme.config());
-            ctx.set_string("path", &post.path);
-            ctx.set_string("url", &post.permalink);
-
-            // Set prev/next posts
-            if let Some(prev) = post.prev(all_posts) {
-                ctx.set_nested_object("page.prev", prev);
-            }
-            if let Some(next) = post.next(all_posts) {
-                ctx.set_nested_object("page.next", next);
-            }
-
-            // Find template
-            let template = theme
-                .find_template(&post.layout, &["post", "page", "index"])
-                .unwrap_or_else(|| "index".to_string());
-
-            theme.render_with_layout(&template, &ctx)?
-        } else {
-            // No theme - generate basic HTML
-            generate_basic_html(&post.title, &post.content)
-        };
-
-        fs::write(&output_file, html)?;
-        tracing::debug!("Generated: {:?}", output_file);
-
-        Ok(())
+    /// Build config data for templates
+    fn build_config_data(&self) -> ConfigData {
+        ConfigData {
+            title: self.hexo.config.title.clone(),
+            subtitle: self.hexo.config.subtitle.clone(),
+            description: self.hexo.config.description.clone(),
+            author: self.hexo.config.author.clone(),
+            url: self.hexo.config.url.clone(),
+            root: self.hexo.config.root.clone(),
+            tag_dir: self.hexo.config.tag_dir.clone(),
+            archive_dir: self.hexo.config.archive_dir.clone(),
+            category_dir: self.hexo.config.category_dir.clone(),
+            per_page: self.hexo.config.per_page,
+            github_username: self
+                .hexo
+                .config
+                .extra
+                .get("github_username")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            keyword: self
+                .hexo
+                .config
+                .keywords
+                .as_ref()
+                .map(|k| k.join(", "))
+                .unwrap_or_default(),
+        }
     }
 
-    /// Generate a single page
-    fn generate_page(&self, page: &Page, site_data: &SiteData) -> Result<()> {
-        let output_path = self.hexo.public_dir.join(page.path.trim_start_matches('/'));
-        let output_file = output_path.join("index.html");
+    /// Build theme data for templates
+    fn build_theme_data(&self) -> ThemeData {
+        let theme_config = self.theme_loader.config();
 
-        fs::create_dir_all(&output_path)?;
+        // Parse menu items
+        let menu: Vec<MenuItem> = theme_config
+            .get("menu")
+            .and_then(|v| {
+                if let serde_yaml::Value::Mapping(map) = v {
+                    Some(
+                        map.iter()
+                            .filter_map(|(k, v)| {
+                                let name = k.as_str()?;
+                                let path = v.as_str()?;
+                                Some(MenuItem {
+                                    name: name.to_string(),
+                                    path: path.to_string(),
+                                })
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
 
-        let html = if let Some(theme) = &self.theme {
-            let mut ctx = TemplateContext::new();
-            ctx.set_object("config", &self.hexo.config);
-            ctx.set_object("site", site_data);
-            ctx.set_object("page", page);
-            ctx.set_object("theme", theme.config());
-            ctx.set_string("path", &page.path);
-            ctx.set_string("url", &page.permalink);
+        // Parse about section
+        let about = theme_config
+            .get("about")
+            .and_then(|v| {
+                if let serde_yaml::Value::Mapping(map) = v {
+                    Some(AboutData {
+                        banner: map
+                            .get("banner")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        github_username: map
+                            .get("github_username")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        twitter_username: map
+                            .get("twitter_username")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(AboutData {
+                banner: String::new(),
+                github_username: String::new(),
+                twitter_username: String::new(),
+            });
 
-            let template = theme
-                .find_template(&page.layout, &["page", "post", "index"])
-                .unwrap_or_else(|| "index".to_string());
+        ThemeData {
+            description: theme_config
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            keyword: theme_config
+                .get("keyword")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            excerpt_link: theme_config
+                .get("excerpt_link")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Read More")
+                .to_string(),
+            catalog: theme_config
+                .get("catalog")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            qrcode: theme_config
+                .get("qrcode")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            menu,
+            about,
+            mathjax_enable: theme_config
+                .get("mathjax_enable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            mathjax_cdn: theme_config
+                .get("mathjax_cdn")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            comment: theme_config
+                .get("comment")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        }
+    }
 
-            theme.render_with_layout(&template, &ctx)?
-        } else {
-            generate_basic_html(&page.title, &page.content)
-        };
-
-        fs::write(&output_file, html)?;
-        tracing::debug!("Generated: {:?}", output_file);
-
-        Ok(())
+    /// Create a base context with common variables
+    fn create_base_context(
+        &self,
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Context {
+        let mut context = Context::new();
+        context.insert("site", site_data);
+        context.insert("config", config_data);
+        context.insert("theme", theme_data);
+        context.insert(
+            "current_year",
+            &chrono::Local::now().format("%Y").to_string(),
+        );
+        context.insert(
+            "now_formatted",
+            &format_datetime_chinese(&chrono::Local::now()),
+        );
+        context
     }
 
     /// Generate index pages with pagination
-    fn generate_index(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        let per_page = self.hexo.config.index_generator.per_page;
-        if per_page == 0 {
-            return Ok(());
-        }
-
+    fn generate_index_pages(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Result<()> {
+        let per_page = self.hexo.config.per_page;
         let total_pages = posts.len().div_ceil(per_page);
 
         for page_num in 1..=total_pages {
             let start = (page_num - 1) * per_page;
             let end = (start + per_page).min(posts.len());
-            let page_posts = &posts[start..end];
+            let page_posts: Vec<PostData> = posts[start..end]
+                .iter()
+                .map(|p| PostData {
+                    title: p.title.clone(),
+                    date: p.date.format("%Y-%m-%d").to_string(),
+                    path: format!("/{}", p.path.trim_start_matches('/')),
+                    permalink: p.permalink.clone(),
+                    tags: p.tags.clone(),
+                    categories: p.categories.clone(),
+                    content: p.content.clone(),
+                    excerpt: p.excerpt.clone(),
+                    word_count: count_words(&p.content),
+                })
+                .collect();
 
-            let (output_path, current_url, path) = if page_num == 1 {
-                // For home page, path should be empty string (no leading slash)
-                (
-                    self.hexo.public_dir.clone(),
-                    self.hexo.config.root.clone(),
-                    String::new(),
-                )
-            } else {
-                let output = self
-                    .hexo
-                    .public_dir
-                    .join(&self.hexo.config.pagination_dir)
-                    .join(page_num.to_string());
-                let url = format!(
-                    "{}{}/{}/",
-                    self.hexo.config.root, self.hexo.config.pagination_dir, page_num
-                );
-                let p = format!("{}/{}/", self.hexo.config.pagination_dir, page_num);
-                (output, url, p)
-            };
-
-            fs::create_dir_all(&output_path)?;
-
-            let page_info = PaginationInfo {
+            let pagination = PaginationData {
                 per_page,
                 total: total_pages,
                 current: page_num,
-                current_url: current_url.clone(),
+                current_url: if page_num == 1 {
+                    "/".to_string()
+                } else {
+                    format!("/page/{}/", page_num)
+                },
                 prev: page_num.saturating_sub(1),
                 prev_link: if page_num > 1 {
                     if page_num == 2 {
-                        self.hexo.config.root.clone()
+                        "/".to_string()
                     } else {
-                        format!(
-                            "{}{}/{}/",
-                            self.hexo.config.root,
-                            self.hexo.config.pagination_dir,
-                            page_num - 1
-                        )
+                        format!("/page/{}/", page_num - 1)
                     }
                 } else {
                     String::new()
@@ -564,672 +347,494 @@ impl<'a> Generator<'a> {
                     0
                 },
                 next_link: if page_num < total_pages {
-                    format!(
-                        "{}{}/{}/",
-                        self.hexo.config.root,
-                        self.hexo.config.pagination_dir,
-                        page_num + 1
-                    )
+                    format!("/page/{}/", page_num + 1)
                 } else {
                     String::new()
                 },
-                is_home: page_num == 1,
-                ..Default::default()
             };
 
-            let html = if let Some(theme) = &self.theme {
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", site_data);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-                // Pre-set wordCount for templates that use complex JS expressions
-                ctx.set_number("wordCount", site_data.word_count as f64);
+            let mut context = self.create_base_context(site_data, config_data, theme_data);
+            context.insert("page_posts", &page_posts);
+            context.insert("pagination", &pagination);
+            context.insert("is_home", &true);
+            context.insert("current_path", &pagination.current_url);
 
-                // Add posts to page context using nested setter
-                let posts_data: Vec<_> = page_posts.iter().collect();
-                ctx.inner_mut().set_nested_object("page.posts", &posts_data);
+            let html = self.renderer.render("index.html", &context)?;
 
-                theme.render_with_layout("index", &ctx)?
+            let output_path = if page_num == 1 {
+                self.hexo.public_dir.join("index.html")
             } else {
-                generate_index_html(page_posts, page_num, total_pages)
+                self.hexo
+                    .public_dir
+                    .join(format!("page/{}/index.html", page_num))
             };
 
-            fs::write(output_path.join("index.html"), html)?;
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output_path, html)?;
+            tracing::debug!("Generated: {:?}", output_path);
         }
-
-        tracing::info!("Generated {} index pages", total_pages);
-        Ok(())
-    }
-
-    /// Generate archive pages
-    fn generate_archives(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        let archive_dir = self.hexo.public_dir.join(&self.hexo.config.archive_dir);
-        fs::create_dir_all(&archive_dir)?;
-
-        // Group posts by year (BTreeMap for sorted order)
-        let mut years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
-        for post in posts {
-            let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
-            years.entry(year).or_default().push(post);
-        }
-
-        // Pre-compute years data for archive template (optimization)
-        // This allows archive template to use fast EJS engine instead of QuickJS
-        let years_data = build_years_data(&years);
-        let years_reversed: Vec<i32> = years.keys().rev().cloned().collect();
-
-        // Generate yearly archives with filtered site data
-        for (year, year_posts) in &years {
-            let year_dir = archive_dir.join(year.to_string());
-            fs::create_dir_all(&year_dir)?;
-
-            let current_url = format!(
-                "{}{}/{}/",
-                self.hexo.config.root, self.hexo.config.archive_dir, year
-            );
-            // Path without leading slash for consistency with page paths
-            let path = format!("{}/{}/", self.hexo.config.archive_dir, year);
-            let page_info = PaginationInfo {
-                is_archive: true,
-                year: Some(*year),
-                current_url: current_url.clone(),
-                ..Default::default()
-            };
-
-            let html = if let Some(theme) = &self.theme {
-                // Build filtered site data with only this year's posts
-                let filtered_posts: Vec<PostSummary> = year_posts
-                    .iter()
-                    .map(|post| PostSummary {
-                        title: post.title.clone(),
-                        date: post.date.format("%Y-%m-%d").to_string(),
-                        path: post.path.clone(),
-                        permalink: post.permalink.clone(),
-                        tags: post.tags.clone(),
-                        categories: post.categories.clone(),
-                        content: post.content.clone(),
-                        word_count: post.content.split_whitespace().count(),
-                    })
-                    .collect();
-
-                let filtered_site = SiteData {
-                    posts: filtered_posts,
-                    pages: site_data.pages.clone(),
-                    tags: site_data.tags.clone(),
-                    categories: site_data.categories.clone(),
-                    word_count: site_data.word_count,
-                };
-
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", &filtered_site);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-                // Pre-computed years data for archive template optimization
-                ctx.set_object("__years", &years_data);
-                ctx.set_object("__yearsReversed", &years_reversed);
-                theme.render_with_layout("archive", &ctx)?
-            } else {
-                let posts_vec: Vec<&Post> = year_posts.to_vec();
-                generate_archive_html(&posts_vec, &format!("Archive: {}", year))
-            };
-
-            fs::write(year_dir.join("index.html"), html)?;
-        }
-
-        // Generate main archive page - pass all posts
-        let current_url = format!("{}{}/", self.hexo.config.root, self.hexo.config.archive_dir);
-        // Path should not have leading slash for consistency with page paths
-        let path = format!("{}/", self.hexo.config.archive_dir);
-        let page_info = PaginationInfo {
-            is_archive: true,
-            current_url: current_url.clone(),
-            ..Default::default()
-        };
-
-        let html = if let Some(theme) = &self.theme {
-            let mut ctx = TemplateContext::new();
-            ctx.set_object("config", &self.hexo.config);
-            ctx.set_object("site", site_data);
-            ctx.set_object("page", &page_info);
-            ctx.set_object("theme", theme.config());
-            ctx.set_string("path", &path);
-            ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-            // Pre-computed years data for archive template optimization
-            ctx.set_object("__years", &years_data);
-            ctx.set_object("__yearsReversed", &years_reversed);
-            theme.render_with_layout("archive", &ctx)?
-        } else {
-            generate_archive_html(&posts.iter().collect::<Vec<_>>(), "Archives")
-        };
-
-        fs::write(archive_dir.join("index.html"), html)?;
 
         Ok(())
     }
 
-    /// Generate category pages
-    fn generate_categories(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        // Use BTreeMap for deterministic iteration order (alphabetically sorted by category name)
-        let mut categories: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
+    /// Generate individual post pages
+    fn generate_post_pages(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Result<()> {
+        let all_posts: Vec<_> = posts.to_vec();
 
-        for post in posts {
-            for cat in &post.categories {
-                categories.entry(cat.clone()).or_default().push(post);
+        for (i, post) in posts.iter().enumerate() {
+            // Compute prev/next navigation
+            let prev_post = if i + 1 < all_posts.len() {
+                Some(NavPost {
+                    title: all_posts[i + 1].title.clone(),
+                    path: format!("/{}", all_posts[i + 1].path.trim_start_matches('/')),
+                })
+            } else {
+                None
+            };
+
+            let next_post = if i > 0 {
+                Some(NavPost {
+                    title: all_posts[i - 1].title.clone(),
+                    path: format!("/{}", all_posts[i - 1].path.trim_start_matches('/')),
+                })
+            } else {
+                None
+            };
+
+            // Generate table of contents
+            let toc_html = toc(&post.content, 3);
+            // Check if TOC has actual content (not just empty <ol class="toc"></ol>)
+            let has_toc = toc_html.contains("toc-item");
+
+            let mut context = self.create_base_context(site_data, config_data, theme_data);
+            context.insert("page_title", &post.title);
+            context.insert("page_date", &post.date.format("%Y-%m-%d").to_string());
+            context.insert("page_content", &post.content);
+            context.insert("page_tags", &post.tags);
+            context.insert("page_categories", &post.categories);
+            context.insert("page_banner", &"");
+            context.insert("page_mathjax", &false);
+            context.insert("current_path", &post.path);
+            // Only show catalog if theme enables it AND there's actual TOC content
+            context.insert("show_catalog", &(theme_data.catalog && has_toc));
+            context.insert("is_special_page", &false);
+            context.insert("toc", &toc_html);
+
+            if let Some(ref prev) = prev_post {
+                context.insert("prev_post", prev);
+            }
+            if let Some(ref next) = next_post {
+                context.insert("next_post", next);
+            }
+
+            let html = self.renderer.render("page.html", &context)?;
+
+            // Strip leading slash from path to avoid creating absolute paths
+            let clean_path = post.path.trim_start_matches('/');
+            let output_path = self.hexo.public_dir.join(clean_path).join("index.html");
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("Failed to create dir {:?}: {}", parent, e))?;
+            }
+            fs::write(&output_path, &html)
+                .map_err(|e| anyhow::anyhow!("Failed to write {:?}: {}", output_path, e))?;
+            tracing::debug!("Generated post: {:?}", output_path);
+        }
+
+        Ok(())
+    }
+
+    /// Generate standalone pages
+    fn generate_page_pages(
+        &self,
+        pages: &[Page],
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Result<()> {
+        for page in pages {
+            let template_name = match page.layout.as_str() {
+                "about" => "about.html",
+                "links" => "links.html",
+                "project" => "project.html",
+                "search" => "search.html",
+                "home" => "home.html",
+                "tags" => "tags.html",
+                _ => "page.html",
+            };
+
+            let mut context = self.create_base_context(site_data, config_data, theme_data);
+            context.insert("page_title", &page.title);
+            context.insert("page_date", &page.date.format("%Y-%m-%d").to_string());
+            context.insert("page_content", &page.content);
+            context.insert("page_tags", &Vec::<String>::new());
+            context.insert("page_banner", &"");
+            context.insert("page_mathjax", &false);
+            context.insert("current_path", &page.path);
+            context.insert("show_catalog", &false);
+            context.insert("is_special_page", &true);
+
+            // Special handling for tags page - provide all_tags data
+            if page.layout == "tags" {
+                let all_tags = self.build_all_tags_data(site_data);
+                context.insert("all_tags", &all_tags);
+            }
+
+            let html = self.renderer.render(template_name, &context)?;
+
+            // Strip leading slash from path to avoid creating absolute paths
+            let clean_path = page.path.trim_start_matches('/');
+            let output_path = self.hexo.public_dir.join(clean_path).join("index.html");
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output_path, html)?;
+            tracing::debug!("Generated page: {:?}", output_path);
+        }
+
+        Ok(())
+    }
+
+    /// Build all tags data for the tags listing page
+    fn build_all_tags_data(&self, site_data: &SiteData) -> Vec<TagData> {
+        // Group posts by tag
+        let mut tags_map: HashMap<String, Vec<PostData>> = HashMap::new();
+
+        for post in &site_data.posts {
+            for tag in &post.tags {
+                // Skip empty tags
+                if tag.trim().is_empty() {
+                    continue;
+                }
+                tags_map.entry(tag.clone()).or_default().push(PostData {
+                    title: post.title.clone(),
+                    date: post.date.clone(),
+                    path: post.path.clone(),
+                    permalink: post.permalink.clone(),
+                    tags: post.tags.clone(),
+                    categories: post.categories.clone(),
+                    content: String::new(), // Don't need content for listing
+                    excerpt: None,
+                    word_count: 0,
+                });
             }
         }
 
-        let cat_dir = self.hexo.public_dir.join(&self.hexo.config.category_dir);
+        // Convert to sorted vector
+        let mut all_tags: Vec<TagData> = tags_map
+            .into_iter()
+            .map(|(name, posts)| TagData { name, posts })
+            .collect();
 
-        for (category, cat_posts) in &categories {
-            let slug = slug::slugify(category);
-            let output_dir = cat_dir.join(&slug);
-            fs::create_dir_all(&output_dir)?;
+        // Sort by tag name
+        all_tags.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let current_url = format!(
-                "{}{}/{}/",
-                self.hexo.config.root, self.hexo.config.category_dir, slug
-            );
-            // Path without leading slash for consistency with page paths
-            let path = format!("{}/{}/", self.hexo.config.category_dir, slug);
-            let page_info = PaginationInfo {
-                is_category: true,
-                category: Some(category.clone()),
-                current_url: current_url.clone(),
-                ..Default::default()
-            };
+        all_tags
+    }
 
-            let html = if let Some(theme) = &self.theme {
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", site_data);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("page.posts", cat_posts);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
+    /// Generate archive page
+    fn generate_archive_page(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Result<()> {
+        // Group posts by year
+        let mut years_map: BTreeMap<i32, Vec<PostData>> = BTreeMap::new();
 
-                let template = theme
-                    .find_template("category", &["archive", "index"])
-                    .unwrap_or_else(|| "index".to_string());
-
-                theme.render_with_layout(&template, &ctx)?
-            } else {
-                let posts_vec: Vec<&Post> = cat_posts.to_vec();
-                generate_archive_html(&posts_vec, &format!("Category: {}", category))
-            };
-
-            fs::write(output_dir.join("index.html"), html)?;
+        for post in posts {
+            let year = post.date.year();
+            years_map.entry(year).or_default().push(PostData {
+                title: post.title.clone(),
+                date: post.date.format("%Y-%m-%d").to_string(),
+                path: format!("/{}", post.path.trim_start_matches('/')),
+                permalink: post.permalink.clone(),
+                tags: post.tags.clone(),
+                categories: post.categories.clone(),
+                content: String::new(), // Don't need full content for archive
+                excerpt: None,
+                word_count: 0,
+            });
         }
+
+        // Convert to sorted vector (newest first)
+        let archive_years: Vec<ArchiveYearData> = years_map
+            .into_iter()
+            .rev()
+            .map(|(year, posts)| ArchiveYearData { year, posts })
+            .collect();
+
+        let mut context = self.create_base_context(site_data, config_data, theme_data);
+        context.insert("archive_years", &archive_years);
+        context.insert("current_path", "archives/");
+        context.insert("is_home", &false);
+
+        let html = self.renderer.render("archive.html", &context)?;
+
+        let output_path = self
+            .hexo
+            .public_dir
+            .join(&self.hexo.config.archive_dir)
+            .join("index.html");
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&output_path, html)?;
+        tracing::info!("Generated archive page");
 
         Ok(())
     }
 
     /// Generate tag pages
-    fn generate_tags(&self, posts: &[Post], site_data: &SiteData) -> Result<()> {
-        // Use BTreeMap for deterministic iteration order (alphabetically sorted by tag name)
-        let mut tags: BTreeMap<String, Vec<&Post>> = BTreeMap::new();
+    fn generate_tag_pages(
+        &self,
+        posts: &[Post],
+        site_data: &SiteData,
+        config_data: &ConfigData,
+        theme_data: &ThemeData,
+    ) -> Result<()> {
+        // Group posts by tag
+        let mut tags_map: HashMap<String, Vec<PostData>> = HashMap::new();
 
         for post in posts {
             for tag in &post.tags {
-                tags.entry(tag.clone()).or_default().push(post);
+                // Skip empty tags
+                if tag.trim().is_empty() {
+                    continue;
+                }
+                tags_map.entry(tag.clone()).or_default().push(PostData {
+                    title: post.title.clone(),
+                    date: post.date.format("%Y-%m-%d").to_string(),
+                    path: format!("/{}", post.path.trim_start_matches('/')),
+                    permalink: post.permalink.clone(),
+                    tags: post.tags.clone(),
+                    categories: post.categories.clone(),
+                    content: String::new(),
+                    excerpt: None,
+                    word_count: 0,
+                });
             }
         }
 
-        let tag_dir = self.hexo.public_dir.join(&self.hexo.config.tag_dir);
+        // Generate individual tag pages
+        for (tag, tag_posts) in &tags_map {
+            // Skip empty tags
+            if tag.trim().is_empty() {
+                continue;
+            }
 
-        for (tag, tag_posts) in &tags {
-            let slug = slug::slugify(tag);
-            let output_dir = tag_dir.join(&slug);
-            fs::create_dir_all(&output_dir)?;
+            let tag_slug = slug::slugify(tag);
 
-            let current_url = format!(
-                "{}{}/{}/",
-                self.hexo.config.root, self.hexo.config.tag_dir, slug
-            );
-            // Path without leading slash for consistency with page paths
-            let path = format!("{}/{}/", self.hexo.config.tag_dir, slug);
-            let page_info = PaginationInfo {
-                is_tag: true,
-                tag: Some(tag.clone()),
-                current_url: current_url.clone(),
-                ..Default::default()
-            };
+            // Skip if slug is empty (shouldn't happen but be safe)
+            if tag_slug.is_empty() {
+                continue;
+            }
 
-            // Create a filtered SiteData with only posts for this tag
-            // This is the key optimization: instead of passing all 258 posts to the template
-            // and letting JS filter them, we pass only the relevant posts
-            // The template logic remains unchanged, but processes much less data
-            let html = if let Some(theme) = &self.theme {
-                // Build filtered site data with only this tag's posts
-                let filtered_posts: Vec<PostSummary> = tag_posts
-                    .iter()
-                    .map(|post| PostSummary {
-                        title: post.title.clone(),
-                        date: post.date.format("%Y-%m-%d").to_string(),
-                        path: post.path.clone(),
-                        permalink: post.permalink.clone(),
-                        tags: post.tags.clone(),
-                        categories: post.categories.clone(),
-                        content: post.content.clone(),
-                        word_count: post.content.split_whitespace().count(),
-                    })
-                    .collect();
+            let mut context = self.create_base_context(site_data, config_data, theme_data);
+            context.insert("tag_name", tag);
+            context.insert("tag_posts", tag_posts);
+            context.insert("current_path", &format!("tags/{}/", tag_slug));
+            context.insert("is_home", &false);
 
-                let filtered_site = SiteData {
-                    posts: filtered_posts,
-                    pages: site_data.pages.clone(),
-                    tags: site_data.tags.clone(),
-                    categories: site_data.categories.clone(),
-                    word_count: site_data.word_count,
-                };
+            let html = self.renderer.render("tag_single.html", &context)?;
 
-                // Build years data for this tag's posts (for archive template optimization)
-                let mut tag_years: BTreeMap<i32, Vec<&Post>> = BTreeMap::new();
-                for post in tag_posts {
-                    let year = post.date.format("%Y").to_string().parse().unwrap_or(2024);
-                    tag_years.entry(year).or_default().push(post);
-                }
-                let years_data = build_years_data(&tag_years);
-                let years_reversed: Vec<i32> = tag_years.keys().rev().cloned().collect();
-
-                // Use archive template with filtered data
-                let mut ctx = TemplateContext::new();
-                ctx.set_object("config", &self.hexo.config);
-                ctx.set_object("site", &filtered_site);
-                ctx.set_object("page", &page_info);
-                ctx.set_object("theme", theme.config());
-                ctx.set_string("path", &path);
-                ctx.set_string("url", &format!("{}{}", self.hexo.config.url, current_url));
-                // Pre-computed years data for archive template optimization
-                ctx.set_object("__years", &years_data);
-                ctx.set_object("__yearsReversed", &years_reversed);
-                theme.render_with_layout("archive", &ctx)?
-            } else {
-                let posts_vec: Vec<&Post> = tag_posts.to_vec();
-                generate_archive_html(&posts_vec, &format!("Tag: {}", tag))
-            };
-
-            fs::write(output_dir.join("index.html"), html)?;
+            let output_path = self
+                .hexo
+                .public_dir
+                .join(&self.hexo.config.tag_dir)
+                .join(&tag_slug)
+                .join("index.html");
+            if let Some(parent) = output_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output_path, html)?;
         }
+
+        tracing::info!("Generated {} tag pages", tags_map.len());
+        Ok(())
+    }
+
+    /// Generate Atom RSS feed
+    fn generate_atom_feed(&self, posts: &[Post]) -> Result<()> {
+        let mut feed = String::new();
+        feed.push_str(r#"<?xml version="1.0" encoding="utf-8"?>"#);
+        feed.push('\n');
+        feed.push_str(r#"<feed xmlns="http://www.w3.org/2005/Atom">"#);
+        feed.push('\n');
+        feed.push_str(&format!(
+            "  <title>{}</title>\n",
+            escape_xml(&self.hexo.config.title)
+        ));
+        feed.push_str(&format!(
+            "  <link href=\"{}/atom.xml\" rel=\"self\"/>\n",
+            self.hexo.config.url
+        ));
+        feed.push_str(&format!("  <link href=\"{}/\"/>\n", self.hexo.config.url));
+        feed.push_str(&format!(
+            "  <updated>{}</updated>\n",
+            chrono::Utc::now().to_rfc3339()
+        ));
+        feed.push_str(&format!("  <id>{}/</id>\n", self.hexo.config.url));
+        feed.push_str(&format!(
+            "  <author><name>{}</name></author>\n",
+            escape_xml(&self.hexo.config.author)
+        ));
+
+        // Include recent posts (limit to 20)
+        for post in posts.iter().take(20) {
+            feed.push_str("  <entry>\n");
+            feed.push_str(&format!("    <title>{}</title>\n", escape_xml(&post.title)));
+            feed.push_str(&format!(
+                "    <link href=\"{}{}\"/>\n",
+                self.hexo.config.url.trim_end_matches('/'),
+                if post.path.starts_with('/') {
+                    post.path.clone()
+                } else {
+                    format!("/{}", post.path)
+                }
+            ));
+            feed.push_str(&format!(
+                "    <id>{}{}</id>\n",
+                self.hexo.config.url.trim_end_matches('/'),
+                if post.path.starts_with('/') {
+                    post.path.clone()
+                } else {
+                    format!("/{}", post.path)
+                }
+            ));
+            feed.push_str(&format!(
+                "    <published>{}</published>\n",
+                post.date.to_rfc3339()
+            ));
+            feed.push_str(&format!(
+                "    <updated>{}</updated>\n",
+                post.updated.unwrap_or(post.date).to_rfc3339()
+            ));
+            // Convert relative URLs in content to absolute URLs
+            let content = post.excerpt.as_ref().unwrap_or(&post.content);
+            let base_url = self.hexo.config.url.trim_end_matches('/');
+            let content_with_full_urls = convert_relative_urls_to_absolute(content, base_url);
+            // Strip invalid XML control characters
+            let clean_content = strip_invalid_xml_chars(&content_with_full_urls);
+            feed.push_str(&format!(
+                "    <content type=\"html\"><![CDATA[{}]]></content>\n",
+                clean_content
+            ));
+            feed.push_str("  </entry>\n");
+        }
+
+        feed.push_str("</feed>\n");
+
+        let output_path = self.hexo.public_dir.join("atom.xml");
+        fs::write(&output_path, feed)?;
+        tracing::info!("Generated atom.xml");
 
         Ok(())
     }
 
-    /// Copy static assets from source directory
+    /// Generate search index (JSON)
+    fn generate_search_index(&self, posts: &[Post]) -> Result<()> {
+        let search_data: Vec<serde_json::Value> = posts
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "title": p.title,
+                    "url": format!("/{}", p.path.trim_start_matches('/')),
+                    "content": strip_html(&p.content),
+                    "date": p.date.format("%Y-%m-%d").to_string(),
+                })
+            })
+            .collect();
+
+        let output_path = self.hexo.public_dir.join("search.json");
+        let json = serde_json::to_string_pretty(&search_data)?;
+        fs::write(&output_path, json)?;
+        tracing::info!("Generated search.json");
+
+        Ok(())
+    }
+
+    /// Copy source assets (images, etc.) to public directory
     fn copy_source_assets(&self) -> Result<()> {
-        for entry in WalkDir::new(&self.hexo.source_dir)
+        let source_dir = &self.hexo.source_dir;
+
+        for entry in WalkDir::new(source_dir)
             .follow_links(true)
             .into_iter()
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
 
-            // Skip special directories and markdown files
-            let relative = path.strip_prefix(&self.hexo.source_dir).unwrap_or(path);
-            let first_component = relative
-                .components()
-                .next()
-                .and_then(|c| c.as_os_str().to_str());
+            if path.is_file() {
+                let ext = path.extension().and_then(|e| e.to_str());
 
-            if let Some(first) = first_component {
-                if first.starts_with('_') {
+                // Skip markdown files (they are processed separately)
+                if matches!(ext, Some("md") | Some("markdown")) {
                     continue;
                 }
-            }
 
-            // Skip markdown files (already processed)
-            let ext = path.extension().and_then(|e| e.to_str());
-            if matches!(ext, Some("md") | Some("markdown")) {
-                continue;
-            }
+                // Skip files in _posts directory
+                if path
+                    .components()
+                    .any(|c| c.as_os_str() == "_posts" || c.as_os_str() == "_drafts")
+                {
+                    continue;
+                }
 
-            if path.is_file() {
+                let relative = path.strip_prefix(source_dir)?;
                 let dest = self.hexo.public_dir.join(relative);
+
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)?;
                 }
+
                 fs::copy(path, &dest)?;
-                tracing::debug!("Copied: {:?}", relative);
             }
         }
 
         Ok(())
     }
+}
 
-    /// Generate Atom feed (atom.xml)
-    fn generate_atom_feed(&self, posts: &[Post]) -> Result<()> {
-        let mut xml = String::from(
-            r#"<?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-"#,
-        );
+/// Count words in HTML content (strips tags first)
+fn count_words(html: &str) -> usize {
+    let text = strip_html(html);
+    // Count Chinese characters and English words
+    let mut count = 0;
+    let mut in_word = false;
 
-        // Site info
-        xml.push_str(&format!(
-            "  <title>{}</title>\n",
-            escape_xml(&self.hexo.config.title)
-        ));
-
-        if !self.hexo.config.subtitle.is_empty() {
-            xml.push_str(&format!(
-                "  <subtitle>{}</subtitle>\n",
-                escape_xml(&self.hexo.config.subtitle)
-            ));
-        }
-
-        xml.push_str(&format!(
-            "  <link href=\"{}atom.xml\" rel=\"self\"/>\n",
-            self.hexo.config.root
-        ));
-        xml.push_str(&format!("  <link href=\"{}\"/>\n", self.hexo.config.url));
-
-        // Updated time (use most recent post date or current time)
-        let updated = posts
-            .first()
-            .map(|p| p.updated.unwrap_or(p.date))
-            .unwrap_or_else(chrono::Local::now);
-        xml.push_str(&format!("  <updated>{}</updated>\n", updated.to_rfc3339()));
-
-        xml.push_str(&format!("  <id>{}/</id>\n", self.hexo.config.url));
-
-        // Author
-        xml.push_str("  <author>\n");
-        xml.push_str(&format!(
-            "    <name>{}</name>\n",
-            escape_xml(&self.hexo.config.author)
-        ));
-        xml.push_str("  </author>\n");
-
-        // Generator
-        xml.push_str(
-            "  <generator uri=\"https://github.com/ponyma/hexo-rs\">hexo-rs</generator>\n",
-        );
-
-        // Entries (limit to most recent 20 posts for feed size)
-        let feed_limit = 20;
-        for post in posts.iter().take(feed_limit) {
-            xml.push_str("  <entry>\n");
-            xml.push_str(&format!("    <title>{}</title>\n", escape_xml(&post.title)));
-            xml.push_str(&format!(
-                "    <link href=\"{}\"/>\n",
-                escape_xml(&post.permalink)
-            ));
-            xml.push_str(&format!("    <id>{}</id>\n", escape_xml(&post.permalink)));
-            xml.push_str(&format!(
-                "    <published>{}</published>\n",
-                post.date.to_rfc3339()
-            ));
-
-            let updated = post.updated.unwrap_or(post.date);
-            xml.push_str(&format!(
-                "    <updated>{}</updated>\n",
-                updated.to_rfc3339()
-            ));
-
-            // Content (full HTML in CDATA)
-            // Convert relative URLs to absolute and escape for CDATA
-            let content_with_absolute_urls =
-                make_urls_absolute(&post.content, &self.hexo.config.url);
-            xml.push_str(&format!(
-                "    <content type=\"html\"><![CDATA[{}]]></content>\n",
-                escape_cdata(&content_with_absolute_urls)
-            ));
-
-            // Summary (excerpt or first 200 chars)
-            if let Some(excerpt) = &post.excerpt {
-                xml.push_str(&format!(
-                    "    <summary type=\"html\">{}</summary>\n",
-                    escape_xml(&sanitize_xml_chars(excerpt))
-                ));
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            if !in_word {
+                in_word = true;
+                count += 1;
             }
-
-            // Tags as categories
-            for tag in &post.tags {
-                let tag_slug = slug::slugify(tag);
-                xml.push_str(&format!(
-                    "    <category term=\"{}\" scheme=\"{}{}/{}/\"/>\n",
-                    escape_xml(tag),
-                    self.hexo.config.url,
-                    self.hexo.config.tag_dir,
-                    tag_slug
-                ));
-            }
-
-            xml.push_str("  </entry>\n");
+        } else if c > '\u{4E00}' && c < '\u{9FFF}' {
+            // Chinese characters
+            count += 1;
+            in_word = false;
+        } else {
+            in_word = false;
         }
-
-        xml.push_str("</feed>\n");
-
-        fs::write(self.hexo.public_dir.join("atom.xml"), xml)?;
-        tracing::info!(
-            "Generated atom.xml with {} entries",
-            posts.len().min(feed_limit)
-        );
-
-        Ok(())
     }
 
-    /// Generate sitemap.xml and post-sitemap.xml
-    fn generate_sitemap(&self, posts: &[Post], pages: &[Page]) -> Result<()> {
-        // Generate main sitemap.xml (simple version)
-        let mut xml = String::from(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-"#,
-        );
-
-        // Add homepage
-        xml.push_str("  <url>\n");
-        xml.push_str(&format!("    <loc>{}</loc>\n", self.hexo.config.url));
-        if let Some(post) = posts.first() {
-            xml.push_str(&format!(
-                "    <lastmod>{}</lastmod>\n",
-                post.date.format("%Y-%m-%d")
-            ));
-        }
-        xml.push_str("    <changefreq>daily</changefreq>\n");
-        xml.push_str("    <priority>1.0</priority>\n");
-        xml.push_str("  </url>\n");
-
-        // Add all posts
-        for post in posts {
-            xml.push_str("  <url>\n");
-            xml.push_str(&format!("    <loc>{}</loc>\n", escape_xml(&post.permalink)));
-            let lastmod = post.updated.unwrap_or(post.date);
-            xml.push_str(&format!(
-                "    <lastmod>{}</lastmod>\n",
-                lastmod.format("%Y-%m-%d")
-            ));
-            xml.push_str("    <changefreq>monthly</changefreq>\n");
-            xml.push_str("    <priority>0.8</priority>\n");
-            xml.push_str("  </url>\n");
-        }
-
-        // Add all pages
-        for page in pages {
-            xml.push_str("  <url>\n");
-            xml.push_str(&format!("    <loc>{}</loc>\n", escape_xml(&page.permalink)));
-            let lastmod = page.updated.unwrap_or(page.date);
-            xml.push_str(&format!(
-                "    <lastmod>{}</lastmod>\n",
-                lastmod.format("%Y-%m-%d")
-            ));
-            xml.push_str("    <changefreq>monthly</changefreq>\n");
-            xml.push_str("    <priority>0.6</priority>\n");
-            xml.push_str("  </url>\n");
-        }
-
-        // Add archive page
-        xml.push_str("  <url>\n");
-        xml.push_str(&format!(
-            "    <loc>{}{}/</loc>\n",
-            self.hexo.config.url, self.hexo.config.archive_dir
-        ));
-        xml.push_str("    <changefreq>weekly</changefreq>\n");
-        xml.push_str("    <priority>0.5</priority>\n");
-        xml.push_str("  </url>\n");
-
-        xml.push_str("</urlset>\n");
-
-        fs::write(self.hexo.public_dir.join("sitemap.xml"), xml)?;
-
-        // Generate post-sitemap.xml (compatible with hexo-sitemap plugin)
-        self.generate_post_sitemap(posts)?;
-
-        tracing::info!(
-            "Generated sitemap.xml with {} URLs",
-            posts.len() + pages.len() + 2
-        );
-
-        Ok(())
-    }
-
-    /// Generate post-sitemap.xml (compatible with hexo-sitemap plugin format)
-    fn generate_post_sitemap(&self, posts: &[Post]) -> Result<()> {
-        let mut xml = String::from(
-            r#"<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="sitemap.xsl"?>
-<urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd" xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-
-"#,
-        );
-
-        // Add homepage
-        xml.push_str("    <url>\n");
-        xml.push_str(&format!(
-            "        <loc>{}/</loc>\n",
-            self.hexo.config.url.trim_end_matches('/')
-        ));
-        xml.push_str("        <changefreq>daily</changefreq>\n");
-        xml.push_str("        <priority>1</priority>\n");
-        xml.push_str("    </url>\n\n");
-
-        // Add all posts
-        for post in posts {
-            let lastmod = post.updated.unwrap_or(post.date);
-            xml.push_str("    <url>\n");
-            xml.push_str(&format!(
-                "        <loc>{}</loc>\n",
-                escape_xml(&post.permalink)
-            ));
-            xml.push_str(&format!(
-                "        <lastmod>{}</lastmod>\n",
-                lastmod.to_rfc3339()
-            ));
-            xml.push_str("        <changefreq>weekly</changefreq>\n");
-            xml.push_str("        <priority>0.6</priority>\n");
-            xml.push_str("\n    </url>\n\n");
-        }
-
-        xml.push_str("</urlset>\n");
-
-        fs::write(self.hexo.public_dir.join("post-sitemap.xml"), xml)?;
-
-        // Generate sitemap.xsl stylesheet
-        self.generate_sitemap_xsl()?;
-
-        Ok(())
-    }
-
-    /// Generate sitemap.xsl stylesheet for pretty display
-    fn generate_sitemap_xsl(&self) -> Result<()> {
-        let xsl = r#"<?xml version="1.0" encoding="UTF-8"?>
-<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:sitemap="http://www.sitemaps.org/schemas/sitemap/0.9">
-<xsl:output method="html" encoding="UTF-8" indent="yes"/>
-<xsl:template match="/">
-<html>
-<head>
-<title>XML Sitemap</title>
-<style type="text/css">
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; }
-h1 { color: #333; border-bottom: 2px solid #4a90d9; padding-bottom: 10px; }
-table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-th { background: #4a90d9; color: white; padding: 12px; text-align: left; }
-td { padding: 10px; border-bottom: 1px solid #ddd; }
-tr:hover { background: #f5f5f5; }
-a { color: #4a90d9; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.count { color: #666; margin-bottom: 20px; }
-</style>
-</head>
-<body>
-<h1>XML Sitemap</h1>
-<p class="count">Number of URLs: <xsl:value-of select="count(sitemap:urlset/sitemap:url)"/></p>
-<table>
-<tr><th>URL</th><th>Last Modified</th><th>Change Freq</th><th>Priority</th></tr>
-<xsl:for-each select="sitemap:urlset/sitemap:url">
-<tr>
-<td><a href="{sitemap:loc}"><xsl:value-of select="sitemap:loc"/></a></td>
-<td><xsl:value-of select="sitemap:lastmod"/></td>
-<td><xsl:value-of select="sitemap:changefreq"/></td>
-<td><xsl:value-of select="sitemap:priority"/></td>
-</tr>
-</xsl:for-each>
-</table>
-</body>
-</html>
-</xsl:template>
-</xsl:stylesheet>
-"#;
-
-        fs::write(self.hexo.public_dir.join("sitemap.xsl"), xsl)?;
-        Ok(())
-    }
+    count
 }
 
-/// Escape special XML characters
-fn escape_xml(s: &str) -> String {
-    sanitize_xml_chars(s)
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-/// Escape content for use in CDATA sections
-/// The only sequence that breaks CDATA is "]]>" - we split it to "]]]]><![CDATA[>"
-fn escape_cdata(s: &str) -> String {
-    sanitize_xml_chars(s).replace("]]>", "]]]]><![CDATA[>")
-}
-
-/// Remove invalid XML characters (control characters except tab, newline, carriage return)
-fn sanitize_xml_chars(s: &str) -> String {
-    s.chars()
-        .filter(|&c| {
-            // Valid XML 1.0 characters:
-            // #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
-            c == '\t'
-                || c == '\n'
-                || c == '\r'
-                || ('\u{0020}'..='\u{D7FF}').contains(&c)
-                || ('\u{E000}'..='\u{FFFD}').contains(&c)
-                || ('\u{10000}'..='\u{10FFFF}').contains(&c)
-        })
-        .collect()
-}
-
-/// Convert relative URLs in HTML content to absolute URLs
-/// Handles src="/..." and href="/..." patterns
-fn make_urls_absolute(html: &str, base_url: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    // Handle src="/path" and href="/path" patterns
-    let result = html
-        .replace("src=\"/", &format!("src=\"{}/", base))
-        .replace("href=\"/", &format!("href=\"{}/", base));
-    result
-}
-
-/// Strip HTML tags from content (for generating plain text summaries)
-#[allow(dead_code)]
+/// Strip HTML tags from content
 fn strip_html(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
+
     for c in html.chars() {
         match c {
             '<' => in_tag = true,
@@ -1238,162 +843,63 @@ fn strip_html(html: &str) -> String {
             _ => {}
         }
     }
+
     result
 }
 
-/// Generate basic HTML without a theme
-pub fn generate_basic_html(title: &str, content: &str) -> String {
+/// Escape XML special characters
+fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+// Import chrono Datelike trait for year()
+use chrono::Datelike;
+use chrono::Timelike;
+
+/// Format datetime with Chinese AM/PM (e.g., "2026-01-31, 上午 11:02")
+fn format_datetime_chinese(dt: &chrono::DateTime<chrono::Local>) -> String {
+    let hour = dt.hour();
+    let (period, hour_12) = if hour < 12 {
+        ("上午", if hour == 0 { 12 } else { hour })
+    } else {
+        ("下午", if hour == 12 { 12 } else { hour - 12 })
+    };
     format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-        pre {{ background: #f5f5f5; padding: 15px; overflow-x: auto; }}
-        code {{ background: #f5f5f5; padding: 2px 5px; }}
-        pre code {{ background: none; padding: 0; }}
-    </style>
-</head>
-<body>
-    <article>
-        <h1>{}</h1>
-        {}
-    </article>
-</body>
-</html>"#,
-        title, title, content
+        "{}, {} {:02}:{:02}",
+        dt.format("%Y-%m-%d"),
+        period,
+        hour_12,
+        dt.minute()
     )
 }
 
-/// Generate basic index HTML without a theme
-fn generate_index_html(posts: &[Post], current_page: usize, total_pages: usize) -> String {
-    let mut html = String::from(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Home</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
-        .post-list { list-style: none; padding: 0; }
-        .post-item { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
-        .post-title { margin: 0 0 10px; }
-        .post-date { color: #666; font-size: 0.9em; }
-        .pagination { margin-top: 30px; text-align: center; }
-    </style>
-</head>
-<body>
-    <ul class="post-list">"#,
-    );
-
-    for post in posts {
-        html.push_str(&format!(
-            r#"<li class="post-item">
-    <h2 class="post-title"><a href="{}">{}</a></h2>
-    <span class="post-date">{}</span>
-    {}
-</li>"#,
-            post.permalink,
-            post.title,
-            post.date.format("%Y-%m-%d"),
-            post.excerpt.as_deref().unwrap_or("")
-        ));
-    }
-
-    html.push_str("</ul>");
-
-    if total_pages > 1 {
-        html.push_str(r#"<div class="pagination">"#);
-        html.push_str(&format!("Page {} of {}", current_page, total_pages));
-        html.push_str("</div>");
-    }
-
-    html.push_str("</body></html>");
-    html
+/// Convert relative URLs in HTML content to absolute URLs
+/// Handles href="/...", src="/...", and similar patterns
+fn convert_relative_urls_to_absolute(content: &str, base_url: &str) -> String {
+    // Replace href="/ and src="/ with absolute URLs
+    let result = content
+        .replace("href=\"/", &format!("href=\"{}/", base_url))
+        .replace("src=\"/", &format!("src=\"{}/", base_url))
+        .replace("href='/", &format!("href='{}/", base_url))
+        .replace("src='/", &format!("src='{}/", base_url));
+    result
 }
 
-/// Generate basic archive HTML without a theme
-fn generate_archive_html(posts: &[&Post], title: &str) -> String {
-    let mut html = format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-        .archive-list {{ list-style: none; padding: 0; }}
-        .archive-item {{ padding: 10px 0; border-bottom: 1px solid #eee; }}
-        .archive-date {{ color: #666; margin-right: 15px; }}
-    </style>
-</head>
-<body>
-    <h1>{}</h1>
-    <ul class="archive-list">"#,
-        title, title
-    );
-
-    for post in posts {
-        html.push_str(&format!(
-            r#"<li class="archive-item"><span class="archive-date">{}</span><a href="{}">{}</a></li>"#,
-            post.date.format("%Y-%m-%d"),
-            post.permalink,
-            post.title
-        ));
-    }
-
-    html.push_str("</ul></body></html>");
-    html
-}
-
-/// Build pre-computed years data for archive templates
-/// Returns a HashMap where keys are years and values are arrays of post summaries
-/// Posts within each year are sorted by date in descending order (newest first)
-fn build_years_data(years: &BTreeMap<i32, Vec<&Post>>) -> HashMap<String, Vec<PostSummary>> {
-    years
-        .iter()
-        .map(|(year, posts)| {
-            // Sort posts by date descending (newest first)
-            let mut sorted_posts: Vec<&Post> = posts.clone();
-            sorted_posts.sort_by(|a, b| b.date.cmp(&a.date));
-
-            let post_summaries: Vec<PostSummary> = sorted_posts
-                .iter()
-                .map(|post| PostSummary {
-                    title: post.title.clone(),
-                    date: post.date.format("%Y-%m-%d").to_string(),
-                    path: post.path.clone(),
-                    permalink: post.permalink.clone(),
-                    tags: post.tags.clone(),
-                    categories: post.categories.clone(),
-                    content: post.content.clone(),
-                    word_count: post.content.split_whitespace().count(),
-                })
-                .collect();
-            (year.to_string(), post_summaries)
+/// Strip invalid XML control characters (except tab, newline, carriage return)
+/// XML 1.0 only allows: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+fn strip_invalid_xml_chars(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            c == '\t'
+                || c == '\n'
+                || c == '\r'
+                || ('\u{0020}'..='\u{D7FF}').contains(&c)
+                || ('\u{E000}'..='\u{FFFD}').contains(&c)
+                || ('\u{10000}'..='\u{10FFFF}').contains(&c)
         })
         .collect()
-}
-
-/// Count Chinese characters in a string
-/// This matches the common CJK Unified Ideographs ranges
-pub fn count_chinese_chars(content: &str) -> usize {
-    content
-        .chars()
-        .filter(|c| {
-            // CJK Unified Ideographs (common Chinese characters)
-            let code = *c as u32;
-            (0x4E00..=0x9FFF).contains(&code) ||    // CJK Unified Ideographs
-        (0x3400..=0x4DBF).contains(&code) ||    // CJK Unified Ideographs Extension A
-        (0x20000..=0x2A6DF).contains(&code) ||  // CJK Unified Ideographs Extension B
-        (0x2A700..=0x2B73F).contains(&code) ||  // CJK Unified Ideographs Extension C
-        (0x2B740..=0x2B81F).contains(&code) ||  // CJK Unified Ideographs Extension D
-        (0x9FA6..=0x9FCB).contains(&code) // Additional CJK
-        })
-        .count()
 }

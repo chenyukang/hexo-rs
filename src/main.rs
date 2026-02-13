@@ -56,10 +56,6 @@ enum Commands {
         /// Deploy after generation
         #[arg(long)]
         deploy: bool,
-
-        /// Force regenerate all files
-        #[arg(short, long)]
-        force: bool,
     },
 
     /// Start a local server
@@ -139,21 +135,11 @@ async fn main() -> Result<()> {
             hexo_rs::commands::new::create_post(&hexo, &title, &layout, path.as_deref())?;
         }
 
-        Commands::Generate {
-            watch,
-            deploy: _,
-            force,
-        } => {
+        Commands::Generate { watch, deploy: _ } => {
             let hexo = hexo_rs::Hexo::new(&base_dir)?;
             tracing::info!("Generating static files...");
 
-            if force {
-                // Clear cache and public dir for force rebuild
-                hexo_rs::commands::generate::clear_cache(&hexo)?;
-                hexo.clean()?;
-            }
-
-            hexo_rs::commands::generate::run_with_options(&hexo, force)?;
+            hexo_rs::commands::generate::run(&hexo)?;
             println!("Generated successfully!");
 
             if watch {
@@ -171,6 +157,7 @@ async fn main() -> Result<()> {
             let hexo = hexo_rs::Hexo::new(&base_dir)?;
 
             // Generate first
+            tracing::info!("Generating static files...");
             hexo.generate()?;
 
             tracing::info!("Starting server at http://{}:{}", ip, port);

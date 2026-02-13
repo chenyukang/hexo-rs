@@ -1,0 +1,29 @@
+<footer class="app-footer" id="footer">
+    <p class="copyright">
+        &copy;
+        {{ current_year }} | Proudly powered by <a href="https://github.com/chenyukang/hexo-rs" target="_blank">hexo-rs</a> with <a href="https://github.com/yanm1ng/hexo-theme-vexo">Vexo</a>
+    </p>
+</footer>
+
+<script>
+    function async(u, c) {
+        var d = document,
+            t = 'script',
+            o = d.createElement(t),
+            s = d.getElementsByTagName(t)[0];
+        o.src = u;
+        if (c) {
+            o.addEventListener('load', function(e) {
+                c(null, e);
+            }, false);
+        }
+        s.parentNode.insertBefore(o, s);
+    }
+</script>
+<script>
+    async("//catcoding.me/js/fastclick.min.js", function() {
+        FastClick.attach(document.body);
+    })
+</script>
+
+<script src="/js/script.js"></script>

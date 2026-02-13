@@ -1,0 +1,13 @@
+{% extends "layout.html" %}
+{% block body %}
+<div id="article-banner">
+    <h2>Links</h2>
+    <p class="post-date">我的推荐</p>
+</div>
+
+<main class="app-body">
+  <article class="post-article">
+  {{ page_content | safe }}
+  </article>
+</main>
+{% endblock body %}

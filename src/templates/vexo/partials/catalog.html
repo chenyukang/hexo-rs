@@ -1,0 +1,10 @@
+<aside class="catalog-container">
+  <div class="toc-main">
+    <strong class="toc-title"></strong>
+    {% if toc is defined and toc %}
+      {{ toc | safe }}
+    {% else %}
+      <ol class="nav">none</ol>
+    {% endif %}
+  </div>
+</aside>

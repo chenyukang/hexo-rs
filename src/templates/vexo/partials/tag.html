@@ -1,0 +1,7 @@
+{% if page_tags is defined %}
+{% for tag in page_tags %}
+  <a href="/{{ config.tag_dir }}#{{ tag }}" >
+    <span class="tag-code">{{ tag }}</span>
+  </a>
+{% endfor %}
+{% endif %}

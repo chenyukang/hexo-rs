@@ -1,0 +1,13 @@
+<section class="time-section">
+  <h1 class="section-year">
+    {{ year }}
+  </h1>
+  <div class="section-list">
+    {% for post in year_posts %}
+      <div class="section-list-item">
+        <a href="{{ post.path }}" class="archive-title">{{ post.title }}</a>
+        <p class="archive-date">{{ post.date }}</p>
+      </div>
+    {% endfor %}
+  </div>
+</section>
