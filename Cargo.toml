@@ -1,6 +1,6 @@
 [package]
 name = "hexo-rs"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Yukang Chen"]
 description = "A fast static site generator compatible with Hexo themes"

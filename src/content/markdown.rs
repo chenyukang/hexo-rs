@@ -42,6 +42,7 @@ impl MarkdownRenderer {
         let mut events: Vec<Event> = Vec::new();
         let mut code_block_lang: Option<String> = None;
         let mut code_block_content = String::new();
+        let mut in_code_block = false;
 
         // Track heading state for adding IDs and anchor links
         let mut in_heading: Option<HeadingLevel> = None;
@@ -54,6 +55,7 @@ impl MarkdownRenderer {
         for event in parser {
             match event {
                 Event::Start(Tag::CodeBlock(kind)) => {
+                    in_code_block = true;
                     code_block_lang = match kind {
                         CodeBlockKind::Fenced(lang) => {
                             let lang = lang.to_string();
@@ -71,10 +73,11 @@ impl MarkdownRenderer {
                     let highlighted =
                         self.highlight_code(&code_block_content, code_block_lang.as_deref());
                     events.push(Event::Html(CowStr::from(highlighted)));
+                    in_code_block = false;
                     code_block_lang = None;
                     code_block_content.clear();
                 }
-                Event::Text(text) if code_block_lang.is_some() => {
+                Event::Text(text) if in_code_block => {
                     code_block_content.push_str(&text);
                 }
                 // Handle heading start - capture the level and prepare to collect text
@@ -163,10 +166,7 @@ impl MarkdownRenderer {
                     }
                 }
                 _ => {
-                    if code_block_lang.is_none()
-                        && in_heading.is_none()
-                        && in_external_link.is_none()
-                    {
+                    if !in_code_block && in_heading.is_none() && in_external_link.is_none() {
                         events.push(event);
                     }
                 }
@@ -362,6 +362,18 @@ mod tests {
         assert!(html.contains("language-rust"));
         // The code content should be present (possibly with span tags around keywords)
         assert!(html.contains("fn") && html.contains("main"));
+    }
+
+    #[test]
+    fn test_render_code_block_no_language() {
+        let renderer = MarkdownRenderer::new();
+        let html = renderer.render("```\nsome code here\n```").unwrap();
+        println!("Generated HTML: {}", html);
+        // Should wrap content in pre/code tags even without a language
+        assert!(html.contains("line-numbers language-plain"));
+        assert!(html.contains("some code here"));
+        // Content should be INSIDE the pre/code block, not outside
+        assert!(!html.contains("<p>some code here</p>"));
     }
 
     #[test]
