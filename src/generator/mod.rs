@@ -408,7 +408,7 @@ impl Generator {
 
             // Generate table of contents
             let toc_html = toc(&post.content, 3);
-            // Check if TOC has actual content (not just empty <ol class="toc"></ol>)
+            // Check if TOC has actual content (not just an empty list)
             let has_toc = toc_html.contains("toc-item");
 
             let mut context = self.create_base_context(site_data, config_data, theme_data);

@@ -38,7 +38,7 @@ pub fn toc(content: &str, max_depth: usize) -> String {
     }
 
     if headings.is_empty() {
-        return r#"<ol class="toc"></ol>"#.to_string();
+        return r#"<ol class="toc toc-nav"></ol>"#.to_string();
     }
 
     // Find the minimum level to use as base
@@ -48,7 +48,7 @@ pub fn toc(content: &str, max_depth: usize) -> String {
     let mut html = String::new();
     let mut current_level = min_level;
 
-    html.push_str(r#"<ol class="toc">"#);
+    html.push_str(r#"<ol class="toc toc-nav">"#);
 
     for (idx, (level, id, text)) in headings.iter().enumerate() {
         let level = *level;

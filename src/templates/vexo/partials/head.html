@@ -1,6 +1,7 @@
 <head>
   <meta http-equiv="content-type" content="text/html; charset=utf-8">
   <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+  <meta name="color-scheme" content="light dark">
   <meta name="description" content="{{ theme.description }}">
   <meta name="keyword" content="{{ theme.keyword }}">
   <meta property="og:site_name" content="{{ config.title }}">
@@ -11,16 +12,23 @@
   <meta property="og:image" content=" http://catcoding.me/css/images/logo.png " />
   <link rel="alternate" type="application/rss+xml" title="{{ config.title }}; Feed" href="https://catcoding.me/atom.xml" />
 
-  <link rel="stylesheet" href="/css/style.css">
+  <script>
+    (function() {
+      try {
+        localStorage.removeItem('catcoding-theme');
+      } catch (e) {}
+      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var theme = prefersDark ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
 <link rel="stylesheet" href="/css/plugins/gitment.css">
-  <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/plugins/fonts.css">
-  <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/plugins/code.css">
-  <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/plugins/prism.css">
-  <link rel="stylesheet" href="/css/style.css">
 <link rel="stylesheet" href="/css/plugins/font-awesome.min.css">
+  <link rel="stylesheet" href="/css/style.css?v=20260526-search-dark-3">
   <script src="/js/qrious.js"></script>
 <script src="/js/gitment.js"></script>
 <script src="/js/jquery.min.js"></script>
