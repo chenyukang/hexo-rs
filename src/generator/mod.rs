@@ -49,7 +49,7 @@ impl Generator {
 
         // Sort posts by date (newest first)
         let mut sorted_posts: Vec<_> = posts.to_vec();
-        sorted_posts.sort_by(|a, b| b.date.cmp(&a.date));
+        sorted_posts.sort_by_key(|post| std::cmp::Reverse(post.date));
 
         // Build site data
         let site_data = self.build_site_data(&sorted_posts, pages);

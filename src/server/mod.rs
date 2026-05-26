@@ -226,8 +226,9 @@ async fn handle_livereload_socket(mut socket: WebSocket, mut reload_rx: broadcas
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Ping(data))) => {
-                        if socket.send(Message::Pong(data)).await.is_err() {
-                            break;
+                        match socket.send(Message::Pong(data)).await {
+                            Ok(()) => {}
+                            Err(_) => break,
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,

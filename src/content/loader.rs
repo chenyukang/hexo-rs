@@ -53,7 +53,7 @@ impl<'a> ContentLoader<'a> {
         }
 
         // Sort by date descending (newest first)
-        posts.sort_by(|a, b| b.date.cmp(&a.date));
+        posts.sort_by_key(|post| std::cmp::Reverse(post.date));
 
         Ok(posts)
     }

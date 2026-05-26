@@ -40,7 +40,7 @@ pub fn run(hexo: &Hexo, content_type: &str) -> Result<()> {
             }
             println!("Tags ({}):", tags.len());
             let mut tags: Vec<_> = tags.into_iter().collect();
-            tags.sort_by(|a, b| b.1.cmp(&a.1));
+            tags.sort_by_key(|tag| std::cmp::Reverse(tag.1));
             for (tag, count) in tags {
                 println!("  {} ({})", tag, count);
             }
@@ -56,7 +56,7 @@ pub fn run(hexo: &Hexo, content_type: &str) -> Result<()> {
             }
             println!("Categories ({}):", categories.len());
             let mut categories: Vec<_> = categories.into_iter().collect();
-            categories.sort_by(|a, b| b.1.cmp(&a.1));
+            categories.sort_by_key(|category| std::cmp::Reverse(category.1));
             for (cat, count) in categories {
                 println!("  {} ({})", cat, count);
             }
