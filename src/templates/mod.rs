@@ -254,3 +254,31 @@ pub struct AboutData {
     pub github_username: String,
     pub twitter_username: String,
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn vexo_head_uses_article_spacing_cache_buster() {
+        let head = include_str!("vexo/partials/head.html");
+
+        assert!(
+            head.contains("/css/style.css?v=20260622-article-left-align"),
+            "the embedded vexo head template should request the article-spacing CSS version"
+        );
+    }
+
+    #[test]
+    fn vexo_templates_emit_page_language() {
+        let layout = include_str!("vexo/layout.html");
+        let page = include_str!("vexo/page.html");
+
+        assert!(
+            layout.contains("<html lang=\"{{ page_lang | default(value=\"zh-CN\") }}\">"),
+            "the root html element should expose the resolved page language"
+        );
+        assert!(
+            page.contains("<section class=\"markdown-content\" lang=\"{{ page_lang | default(value=\"zh-CN\") }}\">") ,
+            "article content should expose the resolved page language for :lang() CSS"
+        );
+    }
+}

@@ -415,6 +415,7 @@ impl Generator {
             context.insert("page_title", &post.title);
             context.insert("page_date", &post.date.format("%Y-%m-%d").to_string());
             context.insert("page_content", &post.content);
+            context.insert("page_lang", &post.lang.as_deref().unwrap_or("zh-CN"));
             context.insert("page_tags", &post.tags);
             context.insert("page_categories", &post.categories);
             context.insert("page_banner", &"");
@@ -472,6 +473,7 @@ impl Generator {
             context.insert("page_title", &page.title);
             context.insert("page_date", &page.date.format("%Y-%m-%d").to_string());
             context.insert("page_content", &page.content);
+            context.insert("page_lang", &page.lang.as_deref().unwrap_or("zh-CN"));
             context.insert("page_tags", &Vec::<String>::new());
             context.insert("page_banner", &"");
             context.insert("page_mathjax", &false);

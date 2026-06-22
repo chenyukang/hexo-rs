@@ -1,11 +1,23 @@
 <head>
+  {% set resolved_page_title = "" %}
+  {% if page_title is defined and page_title %}
+    {% set_global resolved_page_title = page_title %}
+  {% endif %}
+  {% if resolved_page_title == "index" and current_path is defined %}
+    {% set current_menu_path = "/" ~ current_path | replace(from="/index.html", to="") %}
+    {% for item in theme.menu %}
+      {% if item.path == current_menu_path %}
+        {% set_global resolved_page_title = item.name %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
   <meta http-equiv="content-type" content="text/html; charset=utf-8">
   <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
   <meta name="color-scheme" content="light dark">
   <meta name="description" content="{{ theme.description }}">
   <meta name="keyword" content="{{ theme.keyword }}">
   <meta property="og:site_name" content="{{ config.title }}">
-  <meta property="og:title" content="{% if page_title %}{{ page_title }} | {{ config.title }}{% else %}{{ config.title }}{% endif %}" />
+  <meta property="og:title" content="{% if resolved_page_title %}{{ resolved_page_title }} | {{ config.title }}{% else %}{{ config.title }}{% endif %}" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="" />
   <meta property="og:description" content="" />
@@ -28,7 +40,7 @@
 <link rel="stylesheet" href="/css/plugins/code.css">
 <link rel="stylesheet" href="/css/plugins/prism.css">
 <link rel="stylesheet" href="/css/plugins/font-awesome.min.css">
-  <link rel="stylesheet" href="/css/style.css?v=20260526-project-strip-3">
+  <link rel="stylesheet" href="/css/style.css?v=20260622-article-left-align">
   <script src="/js/qrious.js"></script>
 <script src="/js/gitment.js"></script>
 <script src="/js/jquery.min.js"></script>
@@ -41,8 +53,8 @@
   <link rel="icon" href="/css/images/favicon.ico">
   {% endif %}
   <title>
-    {% if page_title %}
-    {{ page_title }} |
+    {% if resolved_page_title %}
+    {{ resolved_page_title }} |
     {{ config.title }}
     {% else %}
     {{ config.title }}

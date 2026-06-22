@@ -15,7 +15,7 @@
 
   <!-- Article START -->
   <article class="post-article">
-    <section class="markdown-content">{{ page_content | safe }}</section>
+    <section class="markdown-content" lang="{{ page_lang | default(value="zh-CN") }}">{{ page_content | safe }}</section>
 
     <p></p>
 

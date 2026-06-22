@@ -138,7 +138,7 @@ impl<'a> ContentLoader<'a> {
         post.permalink = permalink;
         post.comments = fm.comments;
         post.published = fm.published;
-        post.lang = fm.lang;
+        post.lang = Some(resolve_lang(fm.lang, body));
         post.slug = slug;
         post.extra = fm.extra;
 
@@ -251,7 +251,7 @@ impl<'a> ContentLoader<'a> {
         page.path = page_path;
         page.permalink = permalink;
         page.comments = fm.comments;
-        page.lang = fm.lang;
+        page.lang = Some(resolve_lang(fm.lang, body));
         page.extra = fm.extra;
 
         Ok(page)
@@ -298,8 +298,86 @@ fn is_markdown_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn resolve_lang(frontmatter_lang: Option<String>, markdown: &str) -> String {
+    if let Some(lang) = frontmatter_lang {
+        let lang = normalize_lang(&lang);
+        if !lang.is_empty() {
+            return lang;
+        }
+    }
+
+    detect_content_lang(markdown)
+}
+
+fn normalize_lang(lang: &str) -> String {
+    match lang.trim().to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" | "zh_cn" | "cn" => "zh-CN".to_string(),
+        "zh-tw" | "zh_tw" | "zh-hk" | "zh_hk" => "zh-TW".to_string(),
+        "en" | "en-us" | "en_us" | "en-gb" | "en_gb" => "en".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn detect_content_lang(markdown: &str) -> String {
+    let mut cjk_count = 0usize;
+    let mut latin_count = 0usize;
+
+    for c in markdown.chars() {
+        if is_cjk(c) {
+            cjk_count += 1;
+        } else if c.is_ascii_alphabetic() {
+            latin_count += 1;
+        }
+    }
+
+    if latin_count > 80 && latin_count > cjk_count.saturating_mul(3) {
+        "en".to_string()
+    } else {
+        "zh-CN".to_string()
+    }
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{2A6DF}'
+            | '\u{2A700}'..='\u{2B73F}'
+            | '\u{2B740}'..='\u{2B81F}'
+            | '\u{2B820}'..='\u{2CEAF}'
+    )
+}
+
 /// Parse categories from front-matter (handles nested arrays)
 fn parse_categories(categories: &[String]) -> Vec<String> {
     // For now, flatten any nested structure
     categories.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lang_front_matter_takes_precedence() {
+        let markdown = "这是一篇中文文章，但是 front matter 可以显式指定语言。";
+
+        assert_eq!(resolve_lang(Some("en-US".to_string()), markdown), "en");
+    }
+
+    #[test]
+    fn detects_english_when_lang_is_missing() {
+        let markdown = "This is an English article with enough prose to make layout decisions. It contains multiple sentences, technical words, and no meaningful Chinese body text.";
+
+        assert_eq!(resolve_lang(None, markdown), "en");
+    }
+
+    #[test]
+    fn defaults_to_chinese_for_cjk_or_mixed_content() {
+        let markdown = "这是一篇中文文章，里面可能有 Rust、JavaScript、URL 和代码片段，但是主体语言仍然是中文。";
+
+        assert_eq!(resolve_lang(None, markdown), "zh-CN");
+    }
 }
