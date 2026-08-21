@@ -1,6 +1,6 @@
 //! Post and Page models
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,10 +12,10 @@ pub struct Post {
     pub title: String,
 
     /// Publication date
-    pub date: DateTime<Local>,
+    pub date: DateTime<FixedOffset>,
 
     /// Last updated date
-    pub updated: Option<DateTime<Local>>,
+    pub updated: Option<DateTime<FixedOffset>>,
 
     /// Raw markdown content
     pub raw: String,
@@ -75,7 +75,7 @@ pub struct Post {
 
 impl Post {
     /// Create a new post with minimal required fields
-    pub fn new(title: String, date: DateTime<Local>, source: String) -> Self {
+    pub fn new(title: String, date: DateTime<FixedOffset>, source: String) -> Self {
         let slug = slug::slugify(&title);
         Self {
             title,
@@ -130,10 +130,10 @@ pub struct Page {
     pub title: String,
 
     /// Creation date
-    pub date: DateTime<Local>,
+    pub date: DateTime<FixedOffset>,
 
     /// Last updated date
-    pub updated: Option<DateTime<Local>>,
+    pub updated: Option<DateTime<FixedOffset>>,
 
     /// Raw markdown content
     pub raw: String,
@@ -169,7 +169,7 @@ pub struct Page {
 
 impl Page {
     /// Create a new page with minimal required fields
-    pub fn new(title: String, date: DateTime<Local>, source: String) -> Self {
+    pub fn new(title: String, date: DateTime<FixedOffset>, source: String) -> Self {
         Self {
             title,
             date,

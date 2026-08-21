@@ -59,6 +59,19 @@ hexo-rs automatically tracks file changes and only regenerates what's necessary:
 
 The cache is stored in `.hexo-cache/` directory. Use `--force` to bypass the cache and do a full rebuild.
 
+### Date and Time
+
+Naive front-matter dates such as `2026-08-21 12:46:23` are interpreted in
+the site `timezone` from `_config.yml`. An omitted or empty `timezone` defaults
+to `Asia/Shanghai`, so generated dates do not depend on the build machine's
+local timezone. Dates with an explicit RFC 3339 offset keep that offset.
+
+The Hexo-compatible `updated_option` setting controls the fallback when a post
+does not provide `updated`: `mtime` uses the source file modification time,
+`date` uses the publication date, and `empty` leaves it unset. For Git-based
+builds, `updated_option: date` avoids treating checkout time as article update
+time.
+
 ## Limitations
 
 ### 1. Stylus CSS Preprocessor

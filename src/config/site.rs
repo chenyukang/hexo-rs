@@ -1,10 +1,13 @@
 //! Site configuration (_config.yml)
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+pub const DEFAULT_TIMEZONE: &str = "Asia/Shanghai";
 
 /// Main site configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +101,7 @@ impl Default for SiteConfig {
             keywords: None,
             author: "John Doe".to_string(),
             language: "en".to_string(),
-            timezone: String::new(),
+            timezone: DEFAULT_TIMEZONE.to_string(),
 
             url: "http://example.com".to_string(),
             root: "/".to_string(),
@@ -156,6 +159,23 @@ impl SiteConfig {
         let content = fs::read_to_string(path.as_ref())?;
         let config: SiteConfig = serde_yaml::from_str(&content)?;
         Ok(config)
+    }
+
+    /// Resolve the configured site timezone.
+    ///
+    /// Unlike Hexo.js, hexo-rs defaults an omitted or empty timezone to
+    /// Asia/Shanghai so builds are deterministic across local machines and CI.
+    pub fn resolved_timezone(&self) -> Result<Tz> {
+        let timezone = self.timezone.trim();
+        let timezone = if timezone.is_empty() {
+            DEFAULT_TIMEZONE
+        } else {
+            timezone
+        };
+
+        timezone
+            .parse::<Tz>()
+            .map_err(|_| anyhow!("Invalid timezone '{}'. Use an IANA timezone name", timezone))
     }
 
     /// Merge with theme configuration
@@ -299,6 +319,11 @@ mod tests {
         assert_eq!(config.title, "Hexo");
         assert_eq!(config.theme, "landscape");
         assert_eq!(config.per_page, 10);
+        assert_eq!(config.timezone, DEFAULT_TIMEZONE);
+        assert_eq!(
+            config.resolved_timezone().unwrap(),
+            chrono_tz::Asia::Shanghai
+        );
     }
 
     #[test]
@@ -314,5 +339,29 @@ per_page: 20
         assert_eq!(config.author, "Test User");
         assert_eq!(config.theme, "next");
         assert_eq!(config.per_page, 20);
+    }
+
+    #[test]
+    fn empty_timezone_defaults_to_shanghai() {
+        let config: SiteConfig = serde_yaml::from_str("timezone: ''").unwrap();
+
+        assert_eq!(
+            config.resolved_timezone().unwrap(),
+            chrono_tz::Asia::Shanghai
+        );
+    }
+
+    #[test]
+    fn explicit_timezone_is_respected() {
+        let config: SiteConfig = serde_yaml::from_str("timezone: UTC").unwrap();
+
+        assert_eq!(config.resolved_timezone().unwrap(), chrono_tz::UTC);
+    }
+
+    #[test]
+    fn invalid_timezone_is_rejected() {
+        let config: SiteConfig = serde_yaml::from_str("timezone: Mars/Olympus").unwrap();
+
+        assert!(config.resolved_timezone().is_err());
     }
 }

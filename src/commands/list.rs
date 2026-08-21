@@ -7,7 +7,7 @@ use crate::Hexo;
 
 /// List site content by type
 pub fn run(hexo: &Hexo, content_type: &str) -> Result<()> {
-    let loader = ContentLoader::new(hexo);
+    let loader = ContentLoader::new(hexo)?;
 
     match content_type {
         "post" | "posts" => {

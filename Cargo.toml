@@ -1,6 +1,6 @@
 [package]
 name = "hexo-rs"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 authors = ["Yukang Chen"]
 description = "A fast static site generator with built-in vexo theme"
@@ -29,6 +29,7 @@ syntect = "5"
 
 # Date/Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.9"
 
 # HTTP Server
 axum = { version = "0.7", features = ["ws"] }

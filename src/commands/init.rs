@@ -26,7 +26,7 @@ description: ''
 keywords:
 author: John Doe
 language: en
-timezone: ''
+timezone: Asia/Shanghai
 
 # URL
 url: http://example.com

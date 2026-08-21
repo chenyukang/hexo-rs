@@ -1,7 +1,8 @@
 //! Content loader - loads posts and pages from source directory
 
-use anyhow::Result;
-use chrono::Local;
+use anyhow::{bail, Result};
+use chrono::{DateTime, FixedOffset, Utc};
+use chrono_tz::Tz;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -9,18 +10,62 @@ use walkdir::WalkDir;
 use super::{FrontMatter, MarkdownRenderer, Page, Post};
 use crate::Hexo;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdatedOption {
+    Mtime,
+    Date,
+    Empty,
+}
+
+impl UpdatedOption {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "mtime" => Ok(Self::Mtime),
+            "date" => Ok(Self::Date),
+            "empty" => Ok(Self::Empty),
+            value => bail!(
+                "Invalid updated_option '{}'. Expected mtime, date, or empty",
+                value
+            ),
+        }
+    }
+}
+
+fn resolve_updated(
+    frontmatter_updated: Option<DateTime<FixedOffset>>,
+    date: DateTime<FixedOffset>,
+    file_modified: Option<DateTime<FixedOffset>>,
+    option: UpdatedOption,
+) -> Option<DateTime<FixedOffset>> {
+    frontmatter_updated.or(match option {
+        UpdatedOption::Mtime => file_modified,
+        UpdatedOption::Date => Some(date),
+        UpdatedOption::Empty => None,
+    })
+}
+
 /// Loads content from the source directory
 pub struct ContentLoader<'a> {
     hexo: &'a Hexo,
     renderer: MarkdownRenderer,
+    timezone: Tz,
+    updated_option: UpdatedOption,
 }
 
 impl<'a> ContentLoader<'a> {
     /// Create a new content loader
-    pub fn new(hexo: &'a Hexo) -> Self {
+    pub fn new(hexo: &'a Hexo) -> Result<Self> {
         let renderer =
             MarkdownRenderer::with_options("base16-ocean.dark", hexo.config.highlight.line_number);
-        Self { hexo, renderer }
+        let timezone = hexo.config.resolved_timezone()?;
+        let updated_option = UpdatedOption::parse(&hexo.config.updated_option)?;
+
+        Ok(Self {
+            hexo,
+            renderer,
+            timezone,
+            updated_option,
+        })
     }
 
     /// Load all posts from source/_posts
@@ -65,17 +110,23 @@ impl<'a> ContentLoader<'a> {
 
         // Get file metadata for dates
         let metadata = fs::metadata(path)?;
-        let file_modified = metadata
-            .modified()
-            .ok()
-            .map(chrono::DateTime::<Local>::from);
+        let file_modified = metadata.modified().ok().map(|time| {
+            DateTime::<Utc>::from(time)
+                .with_timezone(&self.timezone)
+                .fixed_offset()
+        });
 
         // Determine dates
         let date = fm
-            .parse_date()
-            .unwrap_or_else(|| file_modified.unwrap_or_else(Local::now));
+            .parse_date(self.timezone)
+            .unwrap_or_else(|| file_modified.unwrap_or_else(|| self.now()));
 
-        let updated = fm.parse_updated().or(file_modified);
+        let updated = resolve_updated(
+            fm.parse_updated(self.timezone),
+            date,
+            file_modified,
+            self.updated_option,
+        );
 
         // Get title from front-matter or filename
         let title = fm.title.unwrap_or_else(|| {
@@ -189,16 +240,22 @@ impl<'a> ContentLoader<'a> {
 
         // Get file metadata
         let metadata = fs::metadata(path)?;
-        let file_modified = metadata
-            .modified()
-            .ok()
-            .map(chrono::DateTime::<Local>::from);
+        let file_modified = metadata.modified().ok().map(|time| {
+            DateTime::<Utc>::from(time)
+                .with_timezone(&self.timezone)
+                .fixed_offset()
+        });
 
         let date = fm
-            .parse_date()
-            .unwrap_or_else(|| file_modified.unwrap_or_else(Local::now));
+            .parse_date(self.timezone)
+            .unwrap_or_else(|| file_modified.unwrap_or_else(|| self.now()));
 
-        let updated = fm.parse_updated().or(file_modified);
+        let updated = resolve_updated(
+            fm.parse_updated(self.timezone),
+            date,
+            file_modified,
+            self.updated_option,
+        );
 
         let title = fm.title.unwrap_or_else(|| {
             path.file_stem()
@@ -260,7 +317,7 @@ impl<'a> ContentLoader<'a> {
     /// Generate permalink based on config pattern
     fn generate_permalink(
         &self,
-        date: &chrono::DateTime<Local>,
+        date: &chrono::DateTime<FixedOffset>,
         slug: &str,
         categories: &[String],
     ) -> String {
@@ -287,6 +344,10 @@ impl<'a> ContentLoader<'a> {
             self.hexo.config.root,
             result.trim_start_matches('/')
         )
+    }
+
+    fn now(&self) -> DateTime<FixedOffset> {
+        Utc::now().with_timezone(&self.timezone).fixed_offset()
     }
 }
 
@@ -359,6 +420,46 @@ fn parse_categories(categories: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn datetime(value: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(value).unwrap()
+    }
+
+    #[test]
+    fn parses_updated_option() {
+        assert_eq!(UpdatedOption::parse("mtime").unwrap(), UpdatedOption::Mtime);
+        assert_eq!(UpdatedOption::parse("DATE").unwrap(), UpdatedOption::Date);
+        assert_eq!(UpdatedOption::parse("empty").unwrap(), UpdatedOption::Empty);
+        assert!(UpdatedOption::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn updated_option_date_ignores_checkout_mtime() {
+        let date = datetime("2026-08-21T12:46:23+08:00");
+        let checkout_mtime = datetime("2026-08-21T05:13:48+00:00");
+
+        assert_eq!(
+            resolve_updated(None, date, Some(checkout_mtime), UpdatedOption::Date),
+            Some(date)
+        );
+    }
+
+    #[test]
+    fn explicit_updated_takes_precedence() {
+        let date = datetime("2026-08-21T12:46:23+08:00");
+        let updated = datetime("2026-08-21T12:50:49+08:00");
+        let checkout_mtime = datetime("2026-08-21T05:13:48+00:00");
+
+        assert_eq!(
+            resolve_updated(
+                Some(updated),
+                date,
+                Some(checkout_mtime),
+                UpdatedOption::Mtime,
+            ),
+            Some(updated)
+        );
+    }
 
     #[test]
     fn lang_front_matter_takes_precedence() {

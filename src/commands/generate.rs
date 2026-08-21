@@ -15,7 +15,7 @@ pub fn run(hexo: &Hexo) -> Result<()> {
     let start = std::time::Instant::now();
 
     // Load content
-    let loader = ContentLoader::new(hexo);
+    let loader = ContentLoader::new(hexo)?;
     let posts = loader.load_posts()?;
     let pages = loader.load_pages()?;
 
@@ -82,4 +82,34 @@ pub async fn watch(hexo: &Hexo) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn atom_uses_shanghai_for_naive_dates_when_timezone_is_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("source/_posts")).unwrap();
+        fs::create_dir_all(temp.path().join("themes/landscape")).unwrap();
+        fs::write(
+            temp.path().join("_config.yml"),
+            "title: Test\nauthor: Test\nurl: https://example.test\ntimezone: ''\nupdated_option: date\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("source/_posts/dotr.md"),
+            "---\ntitle: 'Dotr'\ndate: 2026-08-21 12:46:23\n---\n\nContent\n",
+        )
+        .unwrap();
+
+        let hexo = Hexo::new(temp.path()).unwrap();
+        run(&hexo).unwrap();
+
+        let atom = fs::read_to_string(temp.path().join("public/atom.xml")).unwrap();
+        assert!(atom.contains("<published>2026-08-21T12:46:23+08:00</published>"));
+        assert!(atom.contains("<updated>2026-08-21T12:46:23+08:00</updated>"));
+    }
 }

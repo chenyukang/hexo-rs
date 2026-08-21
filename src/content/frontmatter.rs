@@ -1,7 +1,8 @@
 //! Front-matter parsing
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone};
+use chrono_tz::Tz;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
@@ -258,50 +259,63 @@ impl FrontMatter {
     }
 
     /// Parse the date string into a DateTime
-    pub fn parse_date(&self) -> Option<DateTime<Local>> {
-        self.date.as_ref().and_then(|s| parse_date_string(s))
+    pub fn parse_date(&self, timezone: Tz) -> Option<DateTime<FixedOffset>> {
+        self.date
+            .as_ref()
+            .and_then(|s| parse_date_string(s, timezone))
     }
 
     /// Parse the updated date string into a DateTime
-    pub fn parse_updated(&self) -> Option<DateTime<Local>> {
-        self.updated.as_ref().and_then(|s| parse_date_string(s))
+    pub fn parse_updated(&self, timezone: Tz) -> Option<DateTime<FixedOffset>> {
+        self.updated
+            .as_ref()
+            .and_then(|s| parse_date_string(s, timezone))
     }
 }
 
 /// Parse a date string in various formats
-fn parse_date_string(s: &str) -> Option<DateTime<Local>> {
+fn parse_date_string(s: &str, timezone: Tz) -> Option<DateTime<FixedOffset>> {
     let s = s.trim();
 
-    // Try various formats
-    let formats = [
+    // Explicit offsets describe an absolute instant and take precedence over
+    // the configured site timezone.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt);
+    }
+
+    let offset_formats = ["%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%.f%z"];
+    for fmt in offset_formats {
+        if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+            return Some(dt);
+        }
+    }
+
+    let datetime_formats = [
         "%Y-%m-%d %H:%M:%S",
         "%Y/%m/%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%Y/%m/%d %H:%M",
-        "%Y-%m-%d",
-        "%Y/%m/%d",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%S%.f%z",
     ];
 
-    for fmt in formats {
+    for fmt in datetime_formats {
         if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
-            // Interpret the naive datetime as local time, not UTC
-            return Local.from_local_datetime(&dt).single();
-        }
-        // Try parsing date only
-        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
-            let dt = d.and_hms_opt(0, 0, 0)?;
-            // Interpret the naive datetime as local time, not UTC
-            return Local.from_local_datetime(&dt).single();
+            return timezone
+                .from_local_datetime(&dt)
+                .single()
+                .map(|dt| dt.fixed_offset());
         }
     }
 
-    // Try RFC 3339 / ISO 8601
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Some(dt.with_timezone(&Local));
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d"] {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(s, fmt) {
+            let dt = d.and_hms_opt(0, 0, 0)?;
+            return timezone
+                .from_local_datetime(&dt)
+                .single()
+                .map(|dt| dt.fixed_offset());
+        }
     }
 
     None
@@ -353,8 +367,30 @@ This is content.
             ..Default::default()
         };
 
-        let dt = fm.parse_date().unwrap();
-        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-01-15");
+        let dt = fm.parse_date(chrono_tz::Asia::Shanghai).unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+08:00");
+    }
+
+    #[test]
+    fn test_parse_date_uses_configured_timezone() {
+        let fm = FrontMatter {
+            date: Some("2024-01-15 10:30:00".to_string()),
+            ..Default::default()
+        };
+
+        let dt = fm.parse_date(chrono_tz::UTC).unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+00:00");
+    }
+
+    #[test]
+    fn test_parse_date_preserves_explicit_offset() {
+        let fm = FrontMatter {
+            date: Some("2024-01-15T10:30:00+09:00".to_string()),
+            ..Default::default()
+        };
+
+        let dt = fm.parse_date(chrono_tz::UTC).unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+09:00");
     }
 
     #[test]
